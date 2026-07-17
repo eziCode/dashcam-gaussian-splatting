@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		A1000001300A000100000001 /* MetalSplatter in Frameworks */ = {isa = PBXBuildFile; productRef = A1000005300A000100000001 /* MetalSplatter */; };
 		A1000002300A000100000001 /* SplatIO in Frameworks */ = {isa = PBXBuildFile; productRef = A1000006300A000100000001 /* SplatIO */; };
+		A1000007300A000100000001 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A1000009300A000100000001 /* ZIPFoundation */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 			files = (
 				A1000001300A000100000001 /* MetalSplatter in Frameworks */,
 				A1000002300A000100000001 /* SplatIO in Frameworks */,
+				A1000007300A000100000001 /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -74,6 +76,7 @@
 			packageProductDependencies = (
 				A1000005300A000100000001 /* MetalSplatter */,
 				A1000006300A000100000001 /* SplatIO */,
+				A1000009300A000100000001 /* ZIPFoundation */,
 			);
 			productName = iPhoneLIDAR;
 			productReference = E1EC596C3009F2A200BE3B5C /* iPhoneLIDAR.app */;
@@ -105,6 +108,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A1000004300A000100000001 /* XCRemoteSwiftPackageReference "MetalSplatter" */,
+				A1000008300A000100000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E1EC596D3009F2A200BE3B5C /* Products */;
@@ -354,6 +358,14 @@
 				minimumVersion = 1.0.1;
 			};
 		};
+		A1000008300A000100000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.20;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -366,6 +378,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A1000004300A000100000001 /* XCRemoteSwiftPackageReference "MetalSplatter" */;
 			productName = SplatIO;
+		};
+		A1000009300A000100000001 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1000008300A000100000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

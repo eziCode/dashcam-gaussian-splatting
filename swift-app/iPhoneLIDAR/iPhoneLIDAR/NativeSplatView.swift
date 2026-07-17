@@ -90,7 +90,7 @@ final class NativeSplatRenderer: NSObject, MTKViewDelegate {
         let size = view.drawableSize
         let projection = perspective(fovY: .pi / 3, aspect: Float(size.width / max(size.height, 1)), near: 0.01, far: 1000)
         let viewMatrix = translation(0, 0, -distance) * rotation(pitch, SIMD3(1, 0, 0)) * rotation(yaw, SIMD3(0, 1, 0)) * rotation(.pi, SIMD3(0, 0, 1))
-        let viewport = ViewportDescriptor(
+        let viewport = SplatRenderer.ViewportDescriptor(
             viewport: MTLViewport(originX: 0, originY: 0, width: size.width, height: size.height, znear: 0, zfar: 1),
             projectionMatrix: projection,
             viewMatrix: viewMatrix,

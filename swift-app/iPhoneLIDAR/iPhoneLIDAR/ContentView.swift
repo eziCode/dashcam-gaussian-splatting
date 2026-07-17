@@ -7,7 +7,11 @@ struct ContentView: View {
     @StateObject private var capture = LiDARCaptureController()
     @State private var showingViewer = false
     @State private var showingSplatImporter = false
+    @State private var showingSplatViewer = false
     @State private var splatURL: URL?
+    @State private var exportURL: URL?
+    @State private var isPreparingExport = false
+    @State private var showingShareSheet = false
 
     var body: some View {
         ZStack {
@@ -44,6 +48,17 @@ struct ContentView: View {
                             .padding(.vertical, 11)
                     }
                     .buttonStyle(.borderedProminent)
+
+                    Button {
+                        prepareExport()
+                    } label: {
+                        Label(isPreparingExport ? "Preparing ZIP…" : "Export Capture", systemImage: "square.and.arrow.up")
+                            .font(.headline)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 11)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isPreparingExport)
                 }
 
                 if !capture.isRecording {
@@ -95,17 +110,24 @@ struct ContentView: View {
                 }
             }
         }
-        .sheet(item: $splatURL) { url in
-            NavigationStack {
-                NativeSplatView(url: url)
-                    .ignoresSafeArea(edges: .bottom)
-                    .navigationTitle(url.deletingPathExtension().lastPathComponent)
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { splatURL = nil }
+        .sheet(isPresented: $showingSplatViewer) {
+            if let url = splatURL {
+                NavigationStack {
+                    NativeSplatView(url: url)
+                        .ignoresSafeArea(edges: .bottom)
+                        .navigationTitle(url.deletingPathExtension().lastPathComponent)
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { showingSplatViewer = false }
+                            }
                         }
-                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            if let exportURL {
+                ActivityShareView(items: [exportURL])
             }
         }
         .fileImporter(
@@ -116,6 +138,7 @@ struct ContentView: View {
             do {
                 guard let selected = try result.get().first else { return }
                 splatURL = try SplatFileStore.importFile(selected)
+                showingSplatViewer = true
             } catch {
                 capture.errorMessage = error.localizedDescription
             }
@@ -129,6 +152,21 @@ struct ContentView: View {
             Button("OK", role: .cancel) { capture.errorMessage = nil }
         } message: {
             Text(capture.errorMessage ?? "Unknown error")
+        }
+    }
+
+    private func prepareExport() {
+        guard let captureURL = capture.latestCaptureURL else { return }
+        isPreparingExport = true
+        Task {
+            do {
+                exportURL = try await CaptureExporter.archive(captureURL)
+                isPreparingExport = false
+                showingShareSheet = true
+            } catch {
+                isPreparingExport = false
+                capture.errorMessage = error.localizedDescription
+            }
         }
     }
 }

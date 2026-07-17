@@ -6,3 +6,4 @@ runs/
 __pycache__/
 *.py[cod]
 splat-web-viewer/node_modules/
+splat-cloud-generator/.venv/
