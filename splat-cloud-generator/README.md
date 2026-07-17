@@ -35,3 +35,29 @@ docker build -t splat-cloud-generator .
 docker run --rm -v "$PWD/input:/input:ro" -v "$PWD/output:/output" \
   splat-cloud-generator /input/capture.zip /output/scene.ply
 ```
+
+## Merge overlapping scans
+
+Use two or more captures with at least one overlapping, geometrically distinctive area:
+
+```bash
+./merge.sh room-a.zip room-b.zip room-c.zip --output output/whole-floor.ply
+```
+
+The merger uses FPFH feature matching and RANSAC for coarse alignment, point-to-plane ICP for metric refinement, then voxel fusion. It greedily adds the best-overlapping scan, which supports overlap chains such as room A ↔ hallway B ↔ room C. It refuses weak matches instead of producing a plausible-looking but incorrect merge.
+
+If every recording was made during the same uninterrupted ARKit session, preserve the app's shared world coordinates and skip global feature matching:
+
+```bash
+./merge.sh scan-1.zip scan-2.zip --shared-coordinates \
+  --output output/merged.ply
+```
+
+Each run also writes `output/merged.registration.json` containing the estimated transform, overlap fitness, and ICP error for every input. Useful controls:
+
+- `--voxel-size 0.04`: feature-registration resolution; increase for large/noisy scenes.
+- `--fusion-voxel-size 0.025`: final Gaussian spacing.
+- `--min-fitness 0.12`: minimum accepted overlap score; increase when correctness matters more than recovery.
+- `--max-depth 6`: exclude unreliable distant depth.
+
+Blank walls and repeated corridors are ambiguous. Include furniture, door frames, corners, or other distinctive geometry in the overlap, and aim for at least 20–30% overlap between neighboring scans.

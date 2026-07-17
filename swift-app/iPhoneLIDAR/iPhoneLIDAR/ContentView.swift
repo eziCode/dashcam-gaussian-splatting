@@ -18,83 +18,13 @@ struct ContentView: View {
             ARCameraView(session: capture.session)
                 .ignoresSafeArea()
 
-            VStack(spacing: 12) {
-                HStack {
-                    Label(capture.status, systemImage: capture.isSupported ? "viewfinder" : "exclamationmark.triangle")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .background(.ultraThinMaterial, in: Capsule())
-                    Spacer()
-                }
-
+            VStack(spacing: 0) {
+                header
                 Spacer()
-
-                if capture.isRecording {
-                    Text("\(capture.frameCount) frames")
-                        .font(.system(.headline, design: .monospaced))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: Capsule())
-                }
-
-                if !capture.isRecording, capture.latestCaptureURL != nil {
-                    Button {
-                        showingViewer = true
-                    } label: {
-                        Label("View 3D Capture", systemImage: "cube.transparent")
-                            .font(.headline)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 11)
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button {
-                        prepareExport()
-                    } label: {
-                        Label(isPreparingExport ? "Preparing ZIP…" : "Export Capture", systemImage: "square.and.arrow.up")
-                            .font(.headline)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 11)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isPreparingExport)
-                }
-
-                if !capture.isRecording {
-                    Button {
-                        showingSplatImporter = true
-                    } label: {
-                        Label("Open Gaussian Splat", systemImage: "sparkles.rectangle.stack")
-                            .font(.headline)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 11)
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                Button(action: capture.toggleRecording) {
-                    ZStack {
-                        Circle()
-                            .stroke(.white, lineWidth: 4)
-                            .frame(width: 76, height: 76)
-                        RoundedRectangle(cornerRadius: capture.isRecording ? 7 : 30)
-                            .fill(capture.isRecording ? .red : .white)
-                            .frame(width: capture.isRecording ? 34 : 60,
-                                   height: capture.isRecording ? 34 : 60)
-                    }
-                }
-                .disabled(!capture.isSupported)
-                .accessibilityLabel(capture.isRecording ? "Stop recording" : "Start recording")
-
-                Text(capture.isRecording ? "Move slowly and keep surfaces in view" : "Tap to record RGB + LiDAR depth")
-                    .font(.footnote)
-                    .foregroundStyle(.white)
-                    .shadow(radius: 3)
+                controlPanel
             }
-            .padding()
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(.light)
         .sheet(isPresented: $showingViewer) {
             if let url = capture.latestCaptureURL {
                 NavigationStack {
@@ -155,6 +85,98 @@ struct ContentView: View {
         }
     }
 
+    private var header: some View {
+        HStack(spacing: 12) {
+            StateFarmMark()
+                .frame(width: 44, height: 36)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("STATE FARM")
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .tracking(0.8)
+                    .foregroundStyle(Brand.red)
+                Text("Scene Capture")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Brand.charcoal.opacity(0.72))
+            }
+
+            Spacer()
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(capture.isSupported ? (capture.isRecording ? Brand.red : Brand.success) : Brand.warning)
+                    .frame(width: 8, height: 8)
+                Text(capture.status)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Brand.charcoal)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .background(Color.white)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.black.opacity(0.08)).frame(height: 1)
+        }
+    }
+
+    private var controlPanel: some View {
+        VStack(spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(capture.isRecording ? "Capturing scene" : capture.latestCaptureURL == nil ? "Ready to scan" : "Capture ready")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(Brand.charcoal)
+                    Text(capture.isRecording ? "Move slowly and keep surfaces in view." : "Record a complete view of the surrounding area.")
+                        .font(.subheadline)
+                        .foregroundStyle(Brand.charcoal.opacity(0.65))
+                }
+                Spacer()
+                if capture.isRecording {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("\(capture.frameCount)")
+                            .font(.system(.title2, design: .rounded, weight: .bold))
+                            .foregroundStyle(Brand.red)
+                        Text("FRAMES")
+                            .font(.caption2.weight(.bold))
+                            .tracking(0.8)
+                            .foregroundStyle(Brand.charcoal.opacity(0.55))
+                    }
+                }
+            }
+
+            Button(action: capture.toggleRecording) {
+                HStack(spacing: 10) {
+                    Image(systemName: capture.isRecording ? "stop.fill" : "record.circle")
+                        .font(.title3)
+                    Text(capture.isRecording ? "Stop Capture" : "Start Capture")
+                        .font(.headline)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 54)
+                .foregroundStyle(.white)
+                .background(capture.isSupported ? Brand.red : Color.gray, in: RoundedRectangle(cornerRadius: 12))
+            }
+            .disabled(!capture.isSupported)
+
+            if !capture.isRecording {
+                HStack(spacing: 10) {
+                    if capture.latestCaptureURL != nil {
+                        CompactAction(title: "Preview", icon: "cube.transparent") { showingViewer = true }
+                        CompactAction(title: isPreparingExport ? "Preparing" : "Export", icon: "square.and.arrow.up") { prepareExport() }
+                            .disabled(isPreparingExport)
+                    }
+                    CompactAction(title: "Open Splat", icon: "sparkles.rectangle.stack") { showingSplatImporter = true }
+                }
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 20)
+        .padding(.bottom, 14)
+        .background(Color.white, in: UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22))
+        .shadow(color: Color.black.opacity(0.14), radius: 16, y: -4)
+    }
+
     private func prepareExport() {
         guard let captureURL = capture.latestCaptureURL else { return }
         isPreparingExport = true
@@ -168,6 +190,45 @@ struct ContentView: View {
                 capture.errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+private enum Brand {
+    static let red = Color(red: 0.82, green: 0.08, blue: 0.05)
+    static let charcoal = Color(red: 0.12, green: 0.13, blue: 0.14)
+    static let success = Color(red: 0.10, green: 0.55, blue: 0.28)
+    static let warning = Color(red: 0.88, green: 0.52, blue: 0.06)
+}
+
+private struct StateFarmMark: View {
+    var body: some View {
+        ZStack {
+            Ellipse().stroke(Brand.red, lineWidth: 2.4).frame(width: 24, height: 16).offset(y: -8)
+            Ellipse().stroke(Brand.red, lineWidth: 2.4).frame(width: 24, height: 16).offset(x: -10, y: 7)
+            Ellipse().stroke(Brand.red, lineWidth: 2.4).frame(width: 24, height: 16).offset(x: 10, y: 7)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+private struct CompactAction: View {
+    let title: String
+    let icon: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: icon).font(.title3)
+                Text(title).font(.caption.weight(.semibold)).lineLimit(1)
+            }
+            .foregroundStyle(Brand.charcoal)
+            .frame(maxWidth: .infinity)
+            .frame(height: 58)
+            .background(Color(red: 0.95, green: 0.95, blue: 0.95), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.black.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
     }
 }
 
