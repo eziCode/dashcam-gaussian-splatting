@@ -1,332 +1,366 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d'
-import { Aperture, Box, Check, ChevronDown, Focus, HelpCircle, Info, Maximize, Rotate3D, RotateCcw, ShieldCheck, Sparkles, Upload, X, ZoomIn } from 'lucide-react'
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import * as Tooltip from '@radix-ui/react-tooltip'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Slider } from '@/components/ui/slider'
+import {
+  ArrowDown, ArrowRight, Box, Camera, Check, ChevronDown, CircleDot,
+  Cloud, Code2, Database, Download, Focus, Layers3, Maximize, Menu,
+  MousePointer2, Move3D, Play, RotateCcw, ScanLine, ShieldCheck,
+  Smartphone, Sparkles, Upload, X,
+} from 'lucide-react'
 import { StateFarmMark } from '@/components/StateFarmMark'
 
-type Status = 'empty' | 'loading' | 'ready' | 'error'
+type ViewerStatus = 'idle' | 'loading' | 'ready' | 'error'
 
-const formats = ['.ply', '.splat', '.ksplat', '.spz']
+const steps = [
+  { number: '01', icon: Smartphone, title: 'Record every viewpoint', text: 'LiDAR dashcams capture synchronized video, metric depth, time, and camera motion before and during the collision.' },
+  { number: '02', icon: Cloud, title: 'Reconstruct each stream', text: 'A containerized worker projects depth frames into 3D and builds a time-indexed representation of each camera’s view.' },
+  { number: '03', icon: Layers3, title: 'Align the vehicles', text: 'Shared road geometry, landmarks, timestamps, and positioning data place separate recordings into one coordinate system.' },
+  { number: '04', icon: Move3D, title: 'Walk through the accident', text: 'The claims workspace lets an investigator scrub through time, move freely around the scene, and compare recorded perspectives.' },
+]
+
+function useReveal() {
+  useEffect(() => {
+    const elements = document.querySelectorAll<HTMLElement>('[data-reveal]')
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('is-visible')
+          observer.unobserve(entry.target)
+        }
+      })
+    }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' })
+    elements.forEach((element) => observer.observe(element))
+    return () => observer.disconnect()
+  }, [])
+}
 
 function App() {
-  const mountRef = useRef<HTMLDivElement>(null)
-  const viewerRef = useRef<any>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
-  const objectUrlRef = useRef<string | null>(null)
-  const [status, setStatus] = useState<Status>('empty')
-  const [progress, setProgress] = useState(0)
-  const [fileName, setFileName] = useState('')
-  const [fileSize, setFileSize] = useState('')
-  const [error, setError] = useState('')
-  const [dragging, setDragging] = useState(false)
-  const [splatScale, setSplatScale] = useState([100])
-  const [sceneRotation, setSceneRotation] = useState({ yaw: 0, pitch: 0, roll: 0 })
-  const [showPanel, setShowPanel] = useState(true)
+  useReveal()
+  const [menuOpen, setMenuOpen] = useState(false)
 
-  const destroyViewer = useCallback(async () => {
+  return (
+    <main className="overflow-clip bg-[#f6f5f2] text-[#171717]">
+      <Navigation menuOpen={menuOpen} setMenuOpen={setMenuOpen} />
+
+      <section className="relative flex min-h-screen items-end overflow-hidden border-b border-black/10 bg-white px-5 pb-14 pt-32 md:px-10 md:pb-20 lg:px-16">
+        <div className="hero-grid absolute inset-0 opacity-35" aria-hidden />
+
+        <div className="relative z-10 max-w-[1120px]">
+          <div className="mb-9 flex items-center gap-5 text-[11px] font-semibold uppercase tracking-[.16em] text-black/48 animate-enter">
+            <span className="h-px w-10 bg-[#d71920]" /> Prototype · July 2026
+          </div>
+          <h1 className="max-w-[1120px] text-balance text-[clamp(3rem,7vw,7rem)] font-medium leading-[.94] tracking-[-.06em] animate-enter [animation-delay:100ms]">
+            Walk through an accident from every recorded angle.
+          </h1>
+          <div className="mt-9 grid max-w-[980px] gap-8 md:grid-cols-[1fr_1.2fr] md:items-end animate-enter [animation-delay:200ms]">
+            <p className="text-sm font-semibold leading-6 text-[#d71920]">Multiple LiDAR dashcams → one navigable accident scene</p>
+            <div>
+              <p className="max-w-[650px] text-lg leading-8 text-black/62 md:text-xl">A prototype claims tool that combines synchronized camera and LiDAR recordings from multiple vehicles, reconstructs the collision, and lets an investigator move through the event in 3D.</p>
+              <a href="#reconstruction" className="mt-7 inline-flex items-center gap-3 border-b-2 border-[#d71920] pb-2 text-sm font-semibold text-[#b5121b] transition hover:text-[#d71920]">
+                See the result <ArrowDown className="h-4 w-4" />
+              </a>
+            </div>
+          </div>
+        </div>
+        <div className="absolute bottom-7 right-8 hidden items-center gap-3 text-[11px] font-semibold uppercase tracking-[.15em] text-black/45 lg:flex">
+          Scroll to investigate <ChevronDown className="h-4 w-4 animate-bounce" />
+        </div>
+      </section>
+
+      <section id="prototype" className="px-5 py-24 md:px-10 md:py-36 lg:px-16">
+        <div className="mx-auto max-w-[1380px]">
+          <SectionLabel index="01" text="The idea" />
+          <div className="mt-16 grid gap-12 lg:grid-cols-[.75fr_1.45fr] lg:gap-24">
+            <p data-reveal className="reveal text-sm font-semibold uppercase leading-6 tracking-[.14em] text-black/48">Video gives each driver one view. A spatial reconstruction can bring every available view into the same place and time.</p>
+            <div data-reveal className="reveal">
+              <h2 className="text-balance text-[clamp(2.4rem,4.5vw,4.7rem)] font-medium leading-[1.02] tracking-[-.05em]">A walkable record of the collision</h2>
+              <p className="mt-8 max-w-[790px] text-lg leading-8 text-black/58 md:text-xl">Each participating dashcam sees only part of an accident. The proposed system synchronizes those recordings by time, uses LiDAR to preserve metric geometry, and aligns overlapping observations into one shared reconstruction.</p>
+              <p className="mt-5 max-w-[790px] text-base leading-7 text-black/52">A claims professional could pause at a moment, move anywhere inside the reconstructed scene, inspect vehicle positions and sight lines, and compare what each camera observed.</p>
+            </div>
+          </div>
+          <div className="mt-20 grid border-y border-black/10 sm:grid-cols-3">
+            <Stat value="3" label="Independent views merged" />
+            <Stat value="797,928" label="Rendered Gaussians" />
+            <Stat value="≈ 5 cm" label="Registration RMSE" />
+          </div>
+        </div>
+      </section>
+
+      <section id="reconstruction" className="bg-[#111] px-4 py-5 text-white md:px-6 md:py-6">
+        <div className="mx-auto max-w-[1500px] overflow-hidden border border-white/10 bg-[#090909]">
+          <div className="flex flex-col justify-between gap-5 border-b border-white/10 px-6 py-5 md:flex-row md:items-center md:px-8">
+            <div>
+              <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[.16em] text-white/48"><span className="h-2 w-2 rounded-full bg-[#43b875]" /> Live reconstruction</div>
+              <h2 className="mt-2 text-xl font-medium tracking-tight md:text-2xl">Registration proof: three live feeds, one walkable space</h2>
+            </div>
+            <div className="flex flex-wrap gap-2 text-[11px] font-medium text-white/65">
+              <Chip>52 MB PLY</Chip><Chip>WebGL</Chip><Chip>Real capture</Chip>
+            </div>
+          </div>
+          <SplatViewer />
+        </div>
+      </section>
+
+      <section id="capture" className="bg-white px-5 py-24 md:px-10 md:py-36 lg:px-16">
+        <div className="mx-auto max-w-[1380px]">
+          <SectionLabel index="02" text="Capture experience" />
+          <div className="mt-16 grid items-center gap-16 lg:grid-cols-[.9fr_1.1fr] lg:gap-24">
+            <PhoneMockup />
+            <div data-reveal className="reveal">
+              <p className="text-xs font-semibold uppercase tracking-[.14em] text-[#d71920]">Native Swift + ARKit</p>
+              <h2 className="mt-7 text-balance text-[clamp(2.5rem,4.5vw,4.8rem)] font-medium leading-[1] tracking-[-.05em]">The LiDAR dashcam prototype</h2>
+              <p className="mt-8 max-w-[650px] text-lg leading-8 text-black/58">The iPhone stands in for a future LiDAR-enabled dashcam. It records color, depth, confidence data, camera intrinsics, poses, and timestamps together—the measurements needed to place each observation in a shared accident scene.</p>
+              <div className="mt-10 space-y-0 border-t border-black/10">
+                <FeatureLine icon={ScanLine} title="Metric LiDAR depth" text="Preserves road, vehicle, and surrounding geometry" />
+                <FeatureLine icon={Camera} title="Synchronized video" text="Keeps appearance and motion tied to every depth frame" />
+                <FeatureLine icon={Database} title="Time and camera pose" text="Places observations along a common incident timeline" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="pipeline" className="px-5 py-24 md:px-10 md:py-36 lg:px-16">
+        <div className="mx-auto max-w-[1380px]">
+          <SectionLabel index="03" text="Working pipeline" />
+          <div className="mt-16 grid gap-10 lg:grid-cols-[.9fr_1.1fr] lg:gap-24">
+            <div data-reveal className="reveal lg:sticky lg:top-28 lg:self-start">
+              <h2 className="text-balance text-[clamp(2.5rem,4.5vw,4.8rem)] font-medium leading-[1] tracking-[-.05em]">How it works</h2>
+              <p className="mt-7 max-w-[570px] text-lg leading-8 text-black/58">The current prototype proves spatial alignment and rendering. The finished pipeline adds clock synchronization and dynamic object tracking so the reconstructed scene can be explored at any moment in the accident.</p>
+              <div className="mt-9 flex items-center gap-2 border-l-2 border-[#d71920] pl-4 text-xs font-semibold"><Code2 className="h-4 w-4 text-[#d71920]" /> Uses existing Open3D algorithms; no custom model training</div>
+            </div>
+            <div className="space-y-4">
+              {steps.map((step, index) => <PipelineStep key={step.number} {...step} delay={index * 80} />)}
+            </div>
+          </div>
+          <Architecture />
+        </div>
+      </section>
+
+      <section id="outcome" className="bg-[#d71920] px-5 py-24 text-white md:px-10 md:py-36 lg:px-16">
+        <div className="mx-auto max-w-[1380px]">
+          <SectionLabel index="04" text="Prototype outcome" light />
+          <div className="mt-16 grid gap-12 lg:grid-cols-[1.3fr_.7fr] lg:gap-24">
+            <h2 data-reveal className="reveal text-balance text-[clamp(2.8rem,5.5vw,5.8rem)] font-medium leading-[.96] tracking-[-.055em]">The room test proves the spatial foundation.</h2>
+            <div data-reveal className="reveal flex flex-col justify-end">
+              <p className="text-lg leading-8 text-white/78">The three recordings were captured separately and had no shared ARKit origin. Aligning them from overlap alone demonstrates the core capability a multi-dashcam system needs: placing independent views into one space.</p>
+              <div className="mt-8 space-y-4 text-sm font-medium">
+                <OutcomeLine text="Main room used as the spatial anchor" />
+                <OutcomeLine text="Hallway registered at 0.217 overlap fitness" />
+                <OutcomeLine text="Room A registered at 0.398 overlap fitness" />
+                <OutcomeLine text="Merged output rendered interactively above" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="bg-white px-5 py-24 md:px-10 md:py-36 lg:px-16">
+        <div className="mx-auto max-w-[1380px]">
+          <SectionLabel index="05" text="The iPhone is the dashcam" />
+          <div className="mt-16 grid items-start gap-16 lg:grid-cols-[1.05fr_.95fr] lg:gap-24">
+            <div data-reveal className="reveal">
+              <h2 className="text-balance text-[clamp(2.7rem,4.8vw,5rem)] font-medium leading-[1] tracking-[-.05em]">No separate camera to install. Mount the iPhone and it records the road.</h2>
+              <p className="mt-8 max-w-[720px] text-xl leading-9 text-black/58">The phone is not a remote control for another dashcam—it is the LiDAR dashcam. Mounted with its rear cameras facing the road and connected to power, the iPhone captures video, depth, pose, and time for the entire trip.</p>
+              <p className="mt-6 max-w-[720px] text-base leading-7 text-black/52">This fits naturally beside Drive Safe &amp; Save. That program already uses the State Farm app, smartphone sensors and location, and a Bluetooth beacon assigned to the vehicle to recognize and record trips automatically. Scene Capture would be a separate, opt-in mode that uses the same trip start signal to begin a rolling camera and LiDAR recording.</p>
+
+              <div className="mt-10 border-y border-black/10">
+                <ComparisonRow label="Trip detection" current="Beacon + phone motion" proposed="Same automatic trigger" />
+                <ComparisonRow label="Phone input" current="Location + driving sensors" proposed="Video + LiDAR + camera pose" />
+                <ComparisonRow label="Purpose" current="Driving feedback and savings" proposed="Accident scene reconstruction" />
+              </div>
+
+              <p className="mt-6 max-w-[700px] text-sm leading-6 text-black/45">Scene Capture is a prototype concept, not a current Drive Safe &amp; Save feature. It would require explicit consent, clear retention controls, safe mounting, power management, redaction, encryption, and review before use in a claim.</p>
+              <a href="https://www.statefarm.com/customer-care/download-mobile-apps/drive-safe-and-save-mobile" target="_blank" rel="noreferrer" className="mt-7 inline-flex items-center gap-3 text-sm font-semibold text-[#b5121b] hover:text-[#d71920]">How Drive Safe &amp; Save works today <ArrowRight className="h-4 w-4" /></a>
+            </div>
+            <DriveSafeModeMockup />
+          </div>
+
+          <div className="mt-28 grid gap-12 border-t border-black/10 pt-16 lg:grid-cols-2 lg:gap-24">
+            <h2 data-reveal className="reveal text-balance text-[clamp(2.4rem,4vw,4.2rem)] font-medium leading-[1] tracking-[-.05em]">An accident scene organized by time</h2>
+            <div data-reveal className="reveal"><p className="text-xl leading-9 text-black/58">The finished experience is not just a static model. A timeline controls the reconstructed event: vehicles move through the scene, available camera coverage changes, and the investigator can pause before, during, or after impact and walk to any useful viewpoint.</p><a href="#reconstruction" className="mt-9 inline-flex items-center gap-3 text-sm font-semibold text-[#b5121b] hover:text-[#d71920]">Return to the live scene <ArrowRight className="h-4 w-4" /></a></div>
+          </div>
+        </div>
+      </section>
+
+      <footer className="border-t border-black/10 bg-[#f6f5f2] px-5 py-10 md:px-10 lg:px-16">
+        <div className="mx-auto flex max-w-[1380px] flex-col gap-7 md:flex-row md:items-end md:justify-between">
+          <div><StateFarmMark /><p className="mt-4 max-w-[430px] text-xs leading-5 text-black/45">Independent product prototype exploring spatial capture for claims. State Farm trademarks are the property of State Farm Mutual Automobile Insurance Company.</p></div>
+          <div className="text-xs font-semibold uppercase tracking-[.14em] text-black/40">iPhone LiDAR · Open3D · Gaussian splats · React</div>
+        </div>
+      </footer>
+    </main>
+  )
+}
+
+function Navigation({ menuOpen, setMenuOpen }: { menuOpen: boolean; setMenuOpen: (open: boolean) => void }) {
+  return <header className="fixed inset-x-0 top-0 z-50 border-b border-black/10 bg-white/95 backdrop-blur-md">
+    <div className="mx-auto flex h-[74px] max-w-[1510px] items-center justify-between px-5 md:px-10">
+      <a href="#" aria-label="Home"><StateFarmMark /></a>
+      <nav className="hidden items-center gap-8 text-xs font-semibold md:flex">
+        <a className="nav-link" href="#prototype">Concept</a><a className="nav-link" href="#capture">Capture</a><a className="nav-link" href="#pipeline">Pipeline</a><a className="nav-link" href="#outcome">Outcome</a>
+        <a href="#reconstruction" className="bg-[#d71920] px-5 py-2.5 text-white transition hover:bg-[#b5121b]">View 3D scene</a>
+      </nav>
+      <button className="grid h-10 w-10 place-items-center rounded-full border border-black/10 md:hidden" onClick={() => setMenuOpen(!menuOpen)} aria-label="Toggle menu">{menuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}</button>
+    </div>
+    {menuOpen && <nav className="border-t border-black/10 bg-white p-5 text-sm font-semibold md:hidden"><div className="flex flex-col gap-4"><a href="#prototype" onClick={() => setMenuOpen(false)}>Concept</a><a href="#capture" onClick={() => setMenuOpen(false)}>Capture</a><a href="#pipeline" onClick={() => setMenuOpen(false)}>Pipeline</a><a href="#reconstruction" onClick={() => setMenuOpen(false)}>View 3D scene</a></div></nav>}
+  </header>
+}
+
+function SplatViewer() {
+  const rootRef = useRef<HTMLDivElement>(null)
+  const viewerRef = useRef<any>(null)
+  const sectionRef = useRef<HTMLDivElement>(null)
+  const [status, setStatus] = useState<ViewerStatus>('idle')
+  const [progress, setProgress] = useState(0)
+
+  const destroy = useCallback(async () => {
     const viewer = viewerRef.current
     if (!viewer) return
     viewerRef.current = null
-
-    // gaussian-splats-3d assumes a supplied rootElement is a direct child of
-    // document.body during dispose(). Marking the renderer as external avoids
-    // that invalid removal; we then release the captured renderer ourselves.
     const renderer = viewer.renderer
     viewer.usingExternalRenderer = true
-    try {
-      await viewer.dispose()
-    } finally {
-      renderer?.dispose?.()
-      renderer?.domElement?.remove?.()
-    }
+    try { await viewer.dispose() } finally { renderer?.dispose?.(); renderer?.domElement?.remove?.() }
   }, [])
 
-  useEffect(() => () => {
-    void destroyViewer()
-    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
-  }, [destroyViewer])
-
-  useEffect(() => {
-    if (status !== 'ready') return
-
-    const pressed = new Set<string>()
-    let frame = 0
-    let lastTime = performance.now()
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      if (target?.matches('input, textarea, select, button, [contenteditable="true"]')) return
-      if (event.code === 'ShiftLeft') {
-        pressed.add('shiftleft')
-        return
-      }
-      const key = event.key.toLowerCase()
-      if (['w', 'a', 's', 'd'].includes(key)) {
-        event.preventDefault()
-        pressed.add(key)
-      }
-    }
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (event.code === 'ShiftLeft') pressed.delete('shiftleft')
-      pressed.delete(event.key.toLowerCase())
-    }
-    const clearKeys = () => pressed.clear()
-
-    const moveCamera = (time: number) => {
-      const viewer = viewerRef.current
-      const camera = viewer?.camera
-      const target = viewer?.controls?.target
-      const deltaSeconds = Math.min((time - lastTime) / 1000, 0.05)
-      lastTime = time
-
-      if (camera && target && pressed.size) {
-        const dx = target.x - camera.position.x
-        const dz = target.z - camera.position.z
-        const length = Math.hypot(dx, dz) || 1
-        const forwardX = dx / length
-        const forwardZ = dz / length
-        const rightX = forwardZ
-        const rightZ = -forwardX
-        const forwardAmount = (pressed.has('w') ? 1 : 0) - (pressed.has('s') ? 1 : 0)
-        const rightAmount = (pressed.has('d') ? 1 : 0) - (pressed.has('a') ? 1 : 0)
-        const diagonalScale = forwardAmount && rightAmount ? Math.SQRT1_2 : 1
-        const speedMultiplier = pressed.has('shiftleft') ? 3 : 1
-        const distance = 3.5 * speedMultiplier * deltaSeconds * diagonalScale
-        const moveX = (forwardX * forwardAmount + rightX * rightAmount) * distance
-        const moveZ = (forwardZ * forwardAmount + rightZ * rightAmount) * distance
-
-        camera.position.x += moveX
-        camera.position.z += moveZ
-        target.x += moveX
-        target.z += moveZ
-        viewer.controls.update()
-      }
-      frame = requestAnimationFrame(moveCamera)
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('keyup', onKeyUp)
-    window.addEventListener('blur', clearKeys)
-    frame = requestAnimationFrame(moveCamera)
-    return () => {
-      cancelAnimationFrame(frame)
-      window.removeEventListener('keydown', onKeyDown)
-      window.removeEventListener('keyup', onKeyUp)
-      window.removeEventListener('blur', clearKeys)
-    }
-  }, [status])
-
-  const loadScene = useCallback(async (url: string, name: string, size: string, format: number) => {
-    if (!mountRef.current) return
-    setStatus('loading'); setProgress(8); setError(''); setFileName(name); setFileSize(size)
-    await destroyViewer()
+  const load = useCallback(async () => {
+    if (!rootRef.current || viewerRef.current || status === 'loading') return
+    setStatus('loading'); setProgress(12)
     try {
       const viewer = new GaussianSplats3D.Viewer({
-        rootElement: mountRef.current,
+        rootElement: rootRef.current,
         cameraUp: [0, -1, -0.6],
         initialCameraPosition: [1, -4, 6],
         initialCameraLookAt: [0, 0, 0],
         selfDrivenMode: true,
         dynamicScene: true,
         useBuiltInControls: true,
-        sphericalHarmonicsDegree: 2,
+        sphericalHarmonicsDegree: 0,
         sharedMemoryForWorkers: false,
         sceneRevealMode: GaussianSplats3D.SceneRevealMode.Gradual,
         antialiased: true,
       })
       viewerRef.current = viewer
-      setProgress(25)
-      await viewer.addSplatScene(url, {
-        format,
-        progressiveLoad: true,
-        showLoadingUI: false,
-        position: [0, 0, 0],
-        rotation: [0, 0, 0, 1],
-        scale: [1, 1, 1],
+      setProgress(35)
+      await viewer.addSplatScene('/demo/merged-rooms.ply', {
+        format: GaussianSplats3D.SceneFormat.Ply, progressiveLoad: true, showLoadingUI: false,
+        // ARKit and the web renderer use opposite vertical conventions for
+        // this capture, so turn the merged reconstruction over on the X axis.
+        position: [0, 0, 0], rotation: [1, 0, 0, 0], scale: [1, 1, 1],
       })
-      setProgress(94)
-      viewer.start()
-      setSceneRotation({ yaw: 0, pitch: 0, roll: 0 })
-      setStatus('ready'); setProgress(100)
-    } catch (reason) {
-      console.error(reason)
-      await destroyViewer()
-      setStatus('error')
-      setError('We couldn’t open that scene. Confirm the file is a supported Gaussian splat format.')
-    }
-  }, [destroyViewer])
+      setProgress(94); viewer.start(); setProgress(100); setStatus('ready')
+    } catch (error) { console.error(error); setStatus('error'); await destroy() }
+  }, [destroy, status])
 
-  const handleFile = useCallback((file?: File) => {
-    if (!file) return
-    const ext = `.${file.name.split('.').pop()?.toLowerCase()}`
-    if (!formats.includes(ext)) {
-      setStatus('error'); setError(`Unsupported format. Choose ${formats.join(', ')}.`); return
-    }
-    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
-    objectUrlRef.current = URL.createObjectURL(file)
-    const size = file.size > 1_000_000 ? `${(file.size / 1_000_000).toFixed(1)} MB` : `${Math.round(file.size / 1000)} KB`
-    const formatByExtension: Record<string, number> = {
-      '.ply': GaussianSplats3D.SceneFormat.Ply,
-      '.splat': GaussianSplats3D.SceneFormat.Splat,
-      '.ksplat': GaussianSplats3D.SceneFormat.KSplat,
-      '.spz': GaussianSplats3D.SceneFormat.Spz,
-    }
-    loadScene(objectUrlRef.current, file.name, size, formatByExtension[ext])
-  }, [loadScene])
+  useEffect(() => {
+    const node = sectionRef.current
+    if (!node) return
+    const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) { void load(); observer.disconnect() } }, { rootMargin: '180px' })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [load])
 
-  const loadDemo = () => loadScene('/demo/splat.ply', 'Dashcam reconstruction', '57 MB', GaussianSplats3D.SceneFormat.Ply)
-  const resetCamera = () => {
-    const viewer = viewerRef.current
-    if (!viewer) return
-    viewer.camera?.position?.set(1, -4, 6)
-    viewer.controls?.target?.set(0, 0, 0)
-    viewer.controls?.update?.()
-  }
-  const updateSplatScale = (value: number[]) => {
-    setSplatScale(value)
-    viewerRef.current?.splatMesh?.setSplatScale?.(value[0] / 100)
-  }
-  const updateSceneRotation = (rotation: { yaw: number; pitch: number; roll: number }) => {
-    setSceneRotation(rotation)
-    const scene = viewerRef.current?.splatMesh?.scenes?.[0]
-    if (!scene) return
-    const radians = Math.PI / 180
-    scene.rotation.set(rotation.pitch * radians, rotation.yaw * radians, rotation.roll * radians)
-    viewerRef.current.splatMesh.updateTransforms()
-    viewerRef.current.forceRenderNextFrame?.()
-  }
-  const fullscreen = () => document.documentElement.requestFullscreen?.()
+  useEffect(() => () => { void destroy() }, [destroy])
 
-  return (
-    <Tooltip.Provider delayDuration={250}>
-      <main className="relative h-screen min-h-[650px] overflow-hidden bg-[#f7f7f7] text-neutral-950">
-        <div className="absolute inset-0 z-0" ref={mountRef} />
-        {status === 'ready' && <div className="pointer-events-none absolute inset-x-0 top-0 z-[1] h-28 bg-white/20" />}
-        {(status === 'empty' || status === 'error') && <EmptyState onBrowse={() => inputRef.current?.click()} onDemo={loadDemo} dragging={dragging} error={error} onDrop={(event) => { event.preventDefault(); setDragging(false); handleFile(event.dataTransfer.files[0]) }} onDrag={setDragging} />}
-        {status === 'loading' && <LoadingState progress={progress} fileName={fileName} />}
+  const reset = () => { const viewer = viewerRef.current; viewer?.camera?.position?.set(1, -4, 6); viewer?.controls?.target?.set(0, 0, 0); viewer?.controls?.update?.() }
+  const fullscreen = () => sectionRef.current?.requestFullscreen?.()
 
-        <header className="absolute inset-x-0 top-0 z-20 flex h-[72px] items-center justify-between border-b border-neutral-200 bg-white/95 px-5 md:px-8">
-          <div className="flex items-center gap-5">
-            <StateFarmMark />
-            <span className="hidden h-5 w-px bg-neutral-200 sm:block" />
-            <div className="hidden items-center gap-2 sm:flex"><Aperture className="h-4 w-4 text-[#ec0c21]"/><span className="text-sm font-medium text-neutral-700">Scene Studio</span><Badge className="ml-1 py-0.5 text-[10px] uppercase tracking-wider">Beta</Badge></div>
-          </div>
-          <div className="flex items-center gap-2">
-            {status === 'ready' && <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()}><Upload className="h-4 w-4"/><span className="hidden sm:inline">Open scene</span></Button>}
-            <TooltipButton label="Help"><HelpCircle className="h-[18px] w-[18px]"/></TooltipButton>
-            <div className="ml-1 grid h-9 w-9 place-items-center rounded-full bg-[#ec0c21] text-xs font-semibold text-white">EA</div>
-          </div>
-        </header>
-
-        {status === 'ready' && <>
-          <div className="absolute left-5 top-[92px] z-20 animate-fade-up rounded-xl border border-neutral-200 bg-white/95 px-4 py-3 shadow-sm md:left-8">
-            <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-emerald-500"/><span className="text-xs font-medium text-neutral-500">Scene ready</span></div>
-            <h1 className="mt-2 max-w-[55vw] truncate text-lg font-medium tracking-tight">{fileName}</h1>
-            <p className="mt-1 text-xs text-neutral-500">{fileSize} · WASD to move · Shift to speed up · Drag to look</p>
-          </div>
-          {showPanel && <aside className="absolute right-5 top-[92px] z-20 w-[280px] animate-fade-up rounded-2xl border border-neutral-200 bg-white/95 p-4 shadow-lg md:right-8">
-            <div className="flex items-center justify-between"><div><p className="text-sm font-medium">Scene controls</p><p className="mt-0.5 text-xs text-neutral-500">Fine-tune your view</p></div><Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setShowPanel(false)}><X className="h-4 w-4"/></Button></div>
-            <div className="my-4 h-px bg-neutral-200"/>
-            <ControlRow icon={<Sparkles/>} title="Splat size" value={`${splatScale[0]}%`}><Slider value={splatScale} onValueChange={updateSplatScale} min={50} max={150} step={1}/></ControlRow>
-            <div className="my-5 h-px bg-neutral-200"/>
-            <RotationControl value={sceneRotation} onChange={updateSceneRotation}/>
-            <div className="mt-5 grid grid-cols-2 gap-2"><Button variant="outline" size="sm" onClick={resetCamera}><RotateCcw className="h-3.5 w-3.5"/>Reset view</Button><Button variant="outline" size="sm" onClick={fullscreen}><Maximize className="h-3.5 w-3.5"/>Fullscreen</Button></div>
-          </aside>}
-          <div className="absolute bottom-7 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-2xl border border-neutral-200 bg-white/95 p-1.5 shadow-lg">
-            <TooltipButton label="Orbit" active><Box className="h-[18px] w-[18px]"/></TooltipButton>
-            <TooltipButton label="Reset view" onClick={resetCamera}><Focus className="h-[18px] w-[18px]"/></TooltipButton>
-            <TooltipButton label="Zoom"><ZoomIn className="h-[18px] w-[18px]"/></TooltipButton>
-            <span className="mx-1 h-5 w-px bg-neutral-200"/>
-            <TooltipButton label="Scene info" onClick={() => setShowPanel(!showPanel)}><Info className="h-[18px] w-[18px]"/></TooltipButton>
-          </div>
-        </>}
-
-        <footer className="absolute bottom-5 left-5 z-10 hidden items-center gap-2 rounded-full bg-white/90 px-3 py-1.5 text-[11px] text-neutral-500 md:flex md:left-8"><ShieldCheck className="h-3.5 w-3.5"/><span>Your scene stays on this device</span></footer>
-        <input ref={inputRef} type="file" className="hidden" accept=".ply,.splat,.ksplat,.spz" onChange={(e) => handleFile(e.target.files?.[0])}/>
-      </main>
-    </Tooltip.Provider>
-  )
+  return <div ref={sectionRef} className="relative h-[72vh] min-h-[520px] max-h-[880px] bg-[#080808]">
+    <div ref={rootRef} className="absolute inset-0" />
+    {status !== 'ready' && <div className="absolute inset-0 z-10 grid place-items-center bg-[#0a0a0a]">
+      <div className="w-[300px] text-center">
+        {status === 'error' ? <><Box className="mx-auto h-8 w-8 text-[#d71920]" /><p className="mt-4 text-sm font-semibold">The scene could not be loaded.</p><button onClick={() => { setStatus('idle'); void load() }} className="mt-5 rounded-full bg-white px-5 py-2.5 text-xs font-semibold text-black">Try again</button></> : <><div className="scan-loader mx-auto"><ScanLine className="h-7 w-7 text-[#d71920]" /></div><p className="mt-5 text-sm font-semibold">Loading the merged scene</p><p className="mt-2 text-xs text-white/45">797,928 Gaussians · this may take a moment</p><div className="mt-5 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-[#d71920] transition-all duration-700" style={{ width: `${progress}%` }} /></div></>}
+      </div>
+    </div>}
+    {status === 'ready' && <>
+      <div className="pointer-events-none absolute left-5 top-5 rounded-xl border border-white/10 bg-black/65 px-4 py-3 backdrop-blur md:left-7 md:top-7"><p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/45">Interactive scene</p><p className="mt-1.5 text-sm font-medium">Drag to orbit · scroll to zoom</p></div>
+      <div className="absolute bottom-5 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-black/75 p-1.5 backdrop-blur">
+        <ViewerButton label="Orbit"><MousePointer2 className="h-4 w-4" /></ViewerButton><ViewerButton label="Reset" onClick={reset}><RotateCcw className="h-4 w-4" /></ViewerButton><ViewerButton label="Fullscreen" onClick={fullscreen}><Maximize className="h-4 w-4" /></ViewerButton>
+      </div>
+    </>}
+  </div>
 }
 
-function EmptyState({ onBrowse, onDemo, dragging, error, onDrop, onDrag }: { onBrowse: () => void; onDemo: () => void; dragging: boolean; error: string; onDrop: (e: React.DragEvent) => void; onDrag: (v: boolean) => void }) {
-  return <div className="absolute inset-0 z-10 grid place-items-center overflow-hidden bg-[#f7f7f7] px-5 pt-16">
-    <section className="relative z-10 w-full max-w-[620px] animate-fade-up text-center">
-      <Badge className="mb-5 border-[#ec0c21]/20 bg-[#ec0c21]/5 text-[#c20a1b]"><span className="mr-2 h-1.5 w-1.5 rounded-full bg-[#ec0c21]"/>3D claims visualization</Badge>
-      <h1 className="text-balance text-[42px] font-medium leading-[1.06] tracking-[-.045em] text-neutral-950 md:text-[58px]">See every angle.<br/><span className="text-neutral-500">Understand the whole scene.</span></h1>
-      <p className="mx-auto mt-5 max-w-[500px] text-balance text-sm leading-6 text-neutral-600 md:text-base">Explore Gaussian splat scenes with a focused, secure workspace built for clearer decisions.</p>
-      <div className={`group relative mx-auto mt-8 max-w-[520px] rounded-2xl border bg-white p-2 shadow-sm transition-all duration-300 ${dragging ? 'scale-[1.01] border-[#ec0c21]' : 'border-neutral-200 hover:border-neutral-300'}`} onDragOver={(e) => { e.preventDefault(); onDrag(true) }} onDragLeave={() => onDrag(false)} onDrop={onDrop}>
-        <div className="flex min-h-[108px] items-center justify-between rounded-xl border border-dashed border-neutral-300 px-5 text-left md:px-6">
-          <div className="flex items-center gap-4"><div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-neutral-100"><Upload className="h-5 w-5 text-neutral-600"/></div><div><p className="text-sm font-medium">Drop a splat scene here</p><p className="mt-1 text-xs text-neutral-500">PLY, SPLAT, KSPLAT or SPZ</p></div></div>
-          <Button variant="brand" onClick={onBrowse}>Choose file</Button>
+function PhoneMockup() {
+  return <div data-reveal className="reveal mx-auto w-full max-w-[440px]">
+    <div className="phone-shell relative mx-auto aspect-[.52] w-[78%] max-w-[330px] overflow-hidden rounded-[54px] border-[9px] border-[#171717] bg-[#222] shadow-2xl">
+      <div className="absolute left-1/2 top-2 z-20 h-7 w-24 -translate-x-1/2 rounded-full bg-black" />
+      <div className="capture-scene absolute inset-0">
+        <div className="absolute inset-0 opacity-55"><div className="lidar-lines" /></div>
+        <div className="absolute inset-x-0 top-0 flex items-center gap-3 border-b border-white/15 bg-white/95 px-4 pb-3 pt-12 text-black"><div className="grid h-8 w-8 place-items-center rounded-full bg-[#d71920] text-[9px] font-bold text-white">SF</div><div><p className="text-xs font-bold tracking-wider text-[#d71920]">STATE FARM</p><p className="text-[10px] text-black/55">Scene Capture</p></div><div className="ml-auto flex items-center gap-1.5 text-[10px] font-semibold"><span className="h-2 w-2 rounded-full bg-[#34a464]" /> Ready</div></div>
+        <div className="absolute bottom-0 inset-x-0 rounded-t-[28px] bg-white px-5 pb-8 pt-6 text-black">
+          <p className="text-lg font-bold">Ready to scan</p><p className="mt-1 text-[11px] text-black/50">Record a complete view of the surrounding area.</p>
+          <div className="mt-5 flex h-12 items-center justify-center gap-2 rounded-xl bg-[#d71920] text-sm font-semibold text-white"><CircleDot className="h-5 w-5" /> Start Capture</div>
+          <div className="mt-3 grid grid-cols-2 gap-2"><div className="phone-action"><Box className="h-4 w-4" /> Preview</div><div className="phone-action"><Upload className="h-4 w-4" /> Export</div></div>
         </div>
       </div>
-      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
-      <div className="mt-5 flex items-center justify-center gap-3 text-xs text-neutral-500"><span>No scene handy?</span><button className="inline-flex items-center gap-1.5 font-medium text-[#c20a1b] transition hover:text-[#ec0c21]" onClick={onDemo}>Explore the demo <span aria-hidden>→</span></button></div>
-    </section>
+    </div>
+    <p className="mt-7 text-center text-xs font-medium text-black/42">SwiftUI capture interface · running on iPhone Pro</p>
   </div>
 }
 
-function LoadingState({ progress, fileName }: { progress: number; fileName: string }) {
-  return <div className="absolute inset-0 z-10 grid place-items-center bg-[#f7f7f7]"><div className="w-[280px] text-center"><div className="mx-auto mb-5 grid h-12 w-12 place-items-center rounded-2xl border border-neutral-200 bg-white"><Aperture className="h-5 w-5 animate-spin text-[#ec0c21]"/></div><p className="truncate text-sm font-medium">Preparing {fileName}</p><p className="mt-1.5 text-xs text-neutral-500">Optimizing the scene for your device</p><div className="mt-5 h-1 overflow-hidden rounded-full bg-neutral-200"><div className="h-full rounded-full bg-[#ec0c21] transition-all duration-500" style={{ width: `${progress}%` }}/></div></div></div>
-}
+function DriveSafeModeMockup() {
+  return <div data-reveal className="reveal mx-auto w-full max-w-[430px] lg:pt-4">
+    <div className="border border-black/15 bg-[#f7f7f7] p-3 shadow-[12px_14px_0_0_#eceae6]">
+      <div className="bg-white px-5 pb-5 pt-6">
+        <div className="flex items-center justify-between border-b border-black/10 pb-5">
+          <StateFarmMark />
+          <div className="grid h-9 w-9 place-items-center rounded-full bg-[#f2f2f2] text-xs font-semibold">EA</div>
+        </div>
+        <div className="pt-6">
+          <p className="text-xs font-semibold uppercase tracking-[.14em] text-black/42">Safe &amp; Save</p>
+          <h3 className="mt-2 text-2xl font-semibold tracking-tight">Your vehicle</h3>
 
-function TooltipButton({ label, children, onClick, active }: { label: string; children: React.ReactNode; onClick?: () => void; active?: boolean }) {
-  return <Tooltip.Root><Tooltip.Trigger asChild><Button aria-label={label} size="icon" variant="ghost" onClick={onClick} className={active ? 'bg-neutral-100 text-neutral-950' : ''}>{children}</Button></Tooltip.Trigger><Tooltip.Portal><Tooltip.Content sideOffset={8} className="z-50 rounded-md bg-neutral-900 px-2 py-1 text-xs font-medium text-white shadow-lg">{label}</Tooltip.Content></Tooltip.Portal></Tooltip.Root>
-}
+          <div className="mt-5 border border-black/10 p-4">
+            <div className="flex items-center justify-between"><div><p className="text-sm font-semibold">2024 Vehicle</p><p className="mt-1 text-xs text-black/45">Beacon connected</p></div><span className="h-2.5 w-2.5 rounded-full bg-[#21945a]" /></div>
+          </div>
 
-function ControlRow({ icon, title, value, children }: { icon: React.ReactNode; title: string; value: string; children: React.ReactNode }) {
-  return <div><div className="mb-3 flex items-center justify-between"><div className="flex items-center gap-2 text-xs text-neutral-600"><span className="[&>svg]:h-3.5 [&>svg]:w-3.5">{icon}</span>{title}</div><span className="text-[11px] tabular-nums text-neutral-500">{value}</span></div>{children}</div>
-}
+          <div className="mt-4 border-2 border-[#d71920] bg-[#fffafa] p-5">
+            <div className="flex items-start justify-between gap-5">
+              <div className="grid h-10 w-10 shrink-0 place-items-center bg-[#d71920] text-white"><Camera className="h-5 w-5" /></div>
+              <span className="bg-[#f3dddd] px-2 py-1 text-[9px] font-bold uppercase tracking-[.12em] text-[#a90f18]">Concept</span>
+            </div>
+            <h4 className="mt-5 text-lg font-semibold">Scene Capture</h4>
+            <p className="mt-2 text-sm leading-6 text-black/55">Use this iPhone as a LiDAR dashcam whenever a trip is active.</p>
 
-function RotationControl({ value, onChange }: { value: { yaw: number; pitch: number; roll: number }; onChange: (value: { yaw: number; pitch: number; roll: number }) => void }) {
-  const dragRef = useRef<{ x: number; y: number; yaw: number; pitch: number } | null>(null)
-  const updateAxis = (axis: 'yaw' | 'pitch' | 'roll', degrees: number) => onChange({ ...value, [axis]: degrees })
+            <div className="mt-5 space-y-3 border-y border-black/10 py-4 text-xs">
+              <div className="flex items-center justify-between"><span className="text-black/52">Trip detection</span><span className="font-semibold">Automatic</span></div>
+              <div className="flex items-center justify-between"><span className="text-black/52">Rolling history</span><span className="font-semibold">Last 10 minutes</span></div>
+              <div className="flex items-center justify-between"><span className="text-black/52">Upload</span><span className="font-semibold">Only after an incident</span></div>
+            </div>
 
-  return <div>
-    <div className="flex items-center justify-between">
-      <div className="flex items-center gap-2 text-xs font-medium text-neutral-700"><Rotate3D className="h-3.5 w-3.5"/>Scene orientation</div>
-      <button className="text-[11px] font-medium text-[#c20a1b] hover:text-[#ec0c21]" onClick={() => onChange({ yaw: 0, pitch: 0, roll: 0 })}>Reset</button>
-    </div>
-    <div className="mt-3 flex items-center gap-4">
-      <div
-        className="rotation-orb relative h-[88px] w-[88px] shrink-0 cursor-grab touch-none rounded-full border border-neutral-300 bg-neutral-50 active:cursor-grabbing"
-        role="slider"
-        aria-label="Scene yaw and pitch"
-        tabIndex={0}
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId)
-          dragRef.current = { x: event.clientX, y: event.clientY, yaw: value.yaw, pitch: value.pitch }
-        }}
-        onPointerMove={(event) => {
-          const start = dragRef.current
-          if (!start) return
-          onChange({ ...value, yaw: start.yaw + (event.clientX - start.x) * 0.8, pitch: Math.max(-180, Math.min(180, start.pitch - (event.clientY - start.y) * 0.8)) })
-        }}
-        onPointerUp={() => { dragRef.current = null }}
-        onPointerCancel={() => { dragRef.current = null }}
-      >
-        <span className="absolute inset-[13px] rounded-full border border-[#ec0c21]/35" style={{ transform: `rotate(${value.roll}deg)` }}/>
-        <span className="absolute left-1/2 top-[8px] h-[72px] w-[34px] -translate-x-1/2 rounded-[50%] border border-neutral-300" style={{ transform: `translateX(-50%) rotate(${value.yaw}deg)` }}/>
-        <span className="absolute left-[8px] top-1/2 h-[34px] w-[72px] -translate-y-1/2 rounded-[50%] border border-neutral-300" style={{ transform: `translateY(-50%) rotate(${value.pitch}deg)` }}/>
-        <span className="absolute left-1/2 top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#ec0c21]"/>
-      </div>
-      <div className="min-w-0 flex-1 space-y-3">
-        <AxisSlider label="Yaw" value={value.yaw} onChange={(degrees) => updateAxis('yaw', degrees)}/>
-        <AxisSlider label="Pitch" value={value.pitch} onChange={(degrees) => updateAxis('pitch', degrees)}/>
-        <AxisSlider label="Roll" value={value.roll} onChange={(degrees) => updateAxis('roll', degrees)}/>
+            <button className="mt-5 flex w-full items-center justify-center gap-2 bg-[#d71920] px-4 py-3 text-sm font-semibold text-white"><ScanLine className="h-4 w-4" /> Set up Scene Capture</button>
+          </div>
+          <p className="mt-4 text-center text-[10px] leading-4 text-black/38">Proposed placement inside the existing State Farm app</p>
+        </div>
       </div>
     </div>
-    <p className="mt-2 text-[10px] leading-4 text-neutral-500">Drag the orb to tilt and turn the scene.</p>
   </div>
 }
 
-function AxisSlider({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
-  const normalized = Math.round(((value + 180) % 360 + 360) % 360 - 180)
-  return <div><div className="mb-1.5 flex justify-between text-[10px] text-neutral-500"><span>{label}</span><span className="tabular-nums">{normalized}°</span></div><Slider value={[normalized]} onValueChange={([degrees]) => onChange(degrees)} min={-180} max={180} step={1}/></div>
+function ComparisonRow({ label, current, proposed }: { label: string; current: string; proposed: string }) {
+  return <div className="grid gap-3 border-b border-black/10 py-5 last:border-b-0 sm:grid-cols-[.65fr_1fr_1fr] sm:items-center">
+    <p className="text-xs font-semibold uppercase tracking-[.12em] text-black/40">{label}</p>
+    <div><p className="text-[10px] font-semibold uppercase tracking-[.1em] text-black/35">Drive Safe &amp; Save today</p><p className="mt-1.5 text-sm font-medium">{current}</p></div>
+    <div><p className="text-[10px] font-semibold uppercase tracking-[.1em] text-[#b5121b]">Scene Capture proposal</p><p className="mt-1.5 text-sm font-medium">{proposed}</p></div>
+  </div>
 }
+
+function Architecture() {
+  const items = [{ icon: Smartphone, label: 'iPhone LiDAR', sub: 'Swift + ARKit' }, { icon: Download, label: 'Capture ZIP', sub: 'Depth + RGB + poses' }, { icon: Cloud, label: 'Docker worker', sub: 'Open3D registration' }, { icon: Box, label: 'Gaussian PLY', sub: 'Merged metric scene' }, { icon: MousePointer2, label: 'Web viewer', sub: 'React + WebGL' }]
+  return <div data-reveal className="reveal mt-24 border border-black/10 bg-[#171717] p-6 text-white md:p-10">
+    <div className="flex items-center justify-between"><p className="text-xs font-semibold uppercase tracking-[.15em] text-white/45">Prototype architecture</p><ShieldCheck className="h-5 w-5 text-white/35" /></div>
+    <div className="mt-10 grid gap-4 md:grid-cols-5">
+      {items.map(({ icon: Icon, label, sub }, index) => <div key={label} className="relative border border-white/10 bg-white/[.04] p-5"><Icon className="h-5 w-5 text-[#ef3940]" /><p className="mt-8 text-sm font-semibold">{label}</p><p className="mt-1 text-[11px] text-white/45">{sub}</p>{index < items.length - 1 && <ArrowRight className="absolute -right-5 top-1/2 z-10 hidden h-4 w-4 -translate-y-1/2 text-white/25 md:block" />}</div>)}
+    </div>
+  </div>
+}
+
+function SectionLabel({ index, text, light = false }: { index: string; text: string; light?: boolean }) { return <div className={`flex items-center gap-4 border-b pb-4 text-[11px] font-semibold uppercase tracking-[.16em] ${light ? 'border-white/25 text-white/65' : 'border-black/10 text-black/45'}`}><span className={light ? 'text-white' : 'text-[#d71920]'}>{index}</span><span>{text}</span></div> }
+function Stat({ value, label }: { value: string; label: string }) { return <div data-reveal className="reveal border-b border-black/10 py-8 sm:border-b-0 sm:border-r sm:px-8 sm:first:pl-0 sm:last:border-r-0"><p className="text-[clamp(2.4rem,4vw,4.7rem)] font-medium tracking-[-.055em]">{value}</p><p className="mt-2 text-xs font-semibold uppercase tracking-[.13em] text-black/42">{label}</p></div> }
+function Chip({ children }: { children: React.ReactNode }) { return <span className="border border-white/10 bg-white/[.06] px-3 py-1.5">{children}</span> }
+function ViewerButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick?: () => void }) { return <button onClick={onClick} className="flex h-10 items-center gap-2 rounded-full px-3 text-xs font-medium text-white/70 transition hover:bg-white/10 hover:text-white" aria-label={label}>{children}<span className="hidden sm:inline">{label}</span></button> }
+function FeatureLine({ icon: Icon, title, text }: { icon: React.ElementType; title: string; text: string }) { return <div className="grid grid-cols-[auto_1fr] gap-4 border-b border-black/10 py-5"><div className="grid h-10 w-10 place-items-center rounded-full bg-[#f4f3f1]"><Icon className="h-4 w-4 text-[#d71920]" /></div><div><p className="text-sm font-semibold">{title}</p><p className="mt-1 text-sm text-black/48">{text}</p></div></div> }
+function PipelineStep({ number, icon: Icon, title, text, delay }: { number: string; icon: React.ElementType; title: string; text: string; delay: number }) { return <article data-reveal className="reveal group grid gap-6 border-t border-black/15 bg-white p-6 transition duration-300 hover:border-[#d71920] md:grid-cols-[60px_1fr] md:p-8" style={{ transitionDelay: `${delay}ms` }}><div className="flex items-center justify-between md:block"><span className="text-xs font-semibold text-[#d71920]">{number}</span><div className="mt-0 grid h-11 w-11 place-items-center bg-[#f4f3f1] md:mt-8"><Icon className="h-5 w-5" /></div></div><div><h3 className="text-2xl font-medium tracking-tight">{title}</h3><p className="mt-3 max-w-[600px] text-base leading-7 text-black/52">{text}</p></div></article> }
+function OutcomeLine({ text }: { text: string }) { return <div className="flex items-center gap-3"><span className="grid h-5 w-5 place-items-center rounded-full bg-white text-[#d71920]"><Check className="h-3 w-3 stroke-[3]" /></span><span>{text}</span></div> }
 
 export default App
