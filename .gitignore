@@ -5,4 +5,4 @@ runs/
 *.log
 __pycache__/
 *.py[cod]
-splat_viewer/node_modules/
+splat-web-viewer/node_modules/
