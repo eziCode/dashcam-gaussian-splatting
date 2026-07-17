@@ -1,10 +1,7 @@
 .DS_Store
 .venv-apple/
 .viewcrafter-input/
-data/
-outputs/
 runs/
-third_party/
 *.log
 __pycache__/
 *.py[cod]
