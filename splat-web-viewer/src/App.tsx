@@ -9,6 +9,115 @@ import {
 import { StateFarmMark } from '@/components/StateFarmMark'
 
 type ViewerStatus = 'idle' | 'loading' | 'ready' | 'error'
+type CameraPath = { centers: number[][]; forward: number[]; up: number[]; radius: number }
+
+const runtimeParams = new URLSearchParams(window.location.search)
+const runtimeEnvironment = (import.meta as any).env as Record<string, string | undefined>
+const runtimeScene = runtimeParams.get('scene') ?? runtimeEnvironment.VITE_SCENE_URL ?? '/demo/merged-rooms.ply'
+const guidedMode = runtimeEnvironment.VITE_GUIDED_MODE === '1' || runtimeParams.get('guided') === '1'
+
+function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath) {
+  const camera = viewer.camera
+  const start = path.centers[0]
+  let yaw = Math.atan2(path.forward[0], path.forward[2])
+  let pitch = Math.asin(Math.max(-0.98, Math.min(0.98, path.forward[1])))
+  let dragging = false
+  let previousX = 0
+  let previousY = 0
+  let frame = 0
+  let lastTime = performance.now()
+  const keys = new Set<string>()
+
+  const direction = () => [
+    Math.sin(yaw) * Math.cos(pitch),
+    Math.sin(pitch),
+    Math.cos(yaw) * Math.cos(pitch),
+  ]
+  const renderCamera = () => {
+    const forward = direction()
+    camera.lookAt?.(
+      camera.position.x + forward[0],
+      camera.position.y + forward[1],
+      camera.position.z + forward[2],
+    )
+    viewer.forceRenderNextFrame?.()
+  }
+  const inside = (x: number, y: number, z: number) => {
+    const limit = path.radius * path.radius
+    return path.centers.some((center) => {
+      const dx = x - center[0], dy = y - center[1], dz = z - center[2]
+      return dx * dx + dy * dy + dz * dz <= limit
+    })
+  }
+  const tryMove = (dx: number, dy: number, dz: number) => {
+    const x = camera.position.x + dx, y = camera.position.y + dy, z = camera.position.z + dz
+    if (inside(x, y, z)) camera.position.set(x, y, z)
+  }
+  const reset = () => {
+    camera.position.set(start[0], start[1], start[2])
+    yaw = Math.atan2(path.forward[0], path.forward[2])
+    pitch = Math.asin(Math.max(-0.98, Math.min(0.98, path.forward[1])))
+    renderCamera()
+  }
+  const animate = (now: number) => {
+    const dt = Math.min((now - lastTime) / 1000, 0.05)
+    lastTime = now
+    const forward = [Math.sin(yaw), 0, Math.cos(yaw)]
+    const right = [Math.cos(yaw), 0, -Math.sin(yaw)]
+    let x = 0, y = 0, z = 0
+    if (keys.has('KeyW') || keys.has('ArrowUp')) { x += forward[0]; z += forward[2] }
+    if (keys.has('KeyS') || keys.has('ArrowDown')) { x -= forward[0]; z -= forward[2] }
+    if (keys.has('KeyD') || keys.has('ArrowRight')) { x += right[0]; z += right[2] }
+    if (keys.has('KeyA') || keys.has('ArrowLeft')) { x -= right[0]; z -= right[2] }
+    if (keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyE')) y += 1
+    if (keys.has('Space') || keys.has('KeyQ')) y -= 1
+    const length = Math.hypot(x, y, z)
+    if (length) tryMove(x / length * dt * 0.7, y / length * dt * 0.7, z / length * dt * 0.7)
+    renderCamera()
+    frame = requestAnimationFrame(animate)
+  }
+  const keyDown = (event: KeyboardEvent) => {
+    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'Space', 'ControlLeft', 'ControlRight', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) {
+      event.preventDefault(); keys.add(event.code)
+    }
+  }
+  const keyUp = (event: KeyboardEvent) => keys.delete(event.code)
+  const clearKeys = () => keys.clear()
+  const pointerDown = (event: PointerEvent) => {
+    event.stopPropagation()
+    dragging = true; previousX = event.clientX; previousY = event.clientY
+    root.setPointerCapture(event.pointerId); root.focus()
+  }
+  const pointerMove = (event: PointerEvent) => {
+    event.stopPropagation()
+    if (!dragging) return
+    yaw += (event.clientX - previousX) * 0.003
+    pitch = Math.max(-1.45, Math.min(1.45, pitch + (event.clientY - previousY) * 0.003))
+    previousX = event.clientX; previousY = event.clientY
+  }
+  const pointerUp = (event: PointerEvent) => { event.stopPropagation(); dragging = false }
+  const wheel = (event: WheelEvent) => {
+    event.preventDefault(); event.stopPropagation()
+  }
+
+  window.addEventListener('keydown', keyDown, true)
+  window.addEventListener('keyup', keyUp, true)
+  window.addEventListener('blur', clearKeys)
+  root.addEventListener('pointerdown', pointerDown, true)
+  root.addEventListener('pointermove', pointerMove, true)
+  root.addEventListener('pointerup', pointerUp, true)
+  root.addEventListener('pointercancel', pointerUp, true)
+  root.addEventListener('wheel', wheel, { passive: false, capture: true })
+  reset(); frame = requestAnimationFrame(animate)
+  return { reset, dispose: () => {
+    cancelAnimationFrame(frame)
+    window.removeEventListener('keydown', keyDown, true); window.removeEventListener('keyup', keyUp, true)
+    window.removeEventListener('blur', clearKeys)
+    root.removeEventListener('pointerdown', pointerDown, true); root.removeEventListener('pointermove', pointerMove, true)
+    root.removeEventListener('pointerup', pointerUp, true); root.removeEventListener('pointercancel', pointerUp, true)
+    root.removeEventListener('wheel', wheel, true)
+  } }
+}
 
 const steps = [
   { number: '01', icon: Smartphone, title: 'Record every viewpoint', text: 'LiDAR dashcams capture synchronized video, metric depth, time, and camera motion before and during the collision.' },
@@ -36,6 +145,10 @@ function useReveal() {
 function App() {
   useReveal()
   const [menuOpen, setMenuOpen] = useState(false)
+
+  if (guidedMode) {
+    return <main className="fixed inset-0 bg-[#beb9b0] text-white"><SplatViewer /></main>
+  }
 
   return (
     <main className="overflow-clip bg-[#f6f5f2] text-[#171717]">
@@ -209,6 +322,7 @@ function Navigation({ menuOpen, setMenuOpen }: { menuOpen: boolean; setMenuOpen:
 function SplatViewer() {
   const rootRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<any>(null)
+  const guidedRef = useRef<ReturnType<typeof installGuidedControls> | null>(null)
   const sectionRef = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState<ViewerStatus>('idle')
   const [progress, setProgress] = useState(0)
@@ -217,6 +331,7 @@ function SplatViewer() {
     const viewer = viewerRef.current
     if (!viewer) return
     viewerRef.current = null
+    guidedRef.current?.dispose(); guidedRef.current = null
     const renderer = viewer.renderer
     viewer.usingExternalRenderer = true
     try { await viewer.dispose() } finally { renderer?.dispose?.(); renderer?.domElement?.remove?.() }
@@ -233,7 +348,7 @@ function SplatViewer() {
         initialCameraLookAt: [0, 0, 0],
         selfDrivenMode: true,
         dynamicScene: true,
-        useBuiltInControls: true,
+        useBuiltInControls: !guidedMode,
         sphericalHarmonicsDegree: 0,
         sharedMemoryForWorkers: false,
         sceneRevealMode: GaussianSplats3D.SceneRevealMode.Gradual,
@@ -241,12 +356,21 @@ function SplatViewer() {
       })
       viewerRef.current = viewer
       setProgress(35)
-      await viewer.addSplatScene('/demo/merged-rooms.ply', {
+      await viewer.addSplatScene(runtimeScene, {
         format: GaussianSplats3D.SceneFormat.Ply, progressiveLoad: true, showLoadingUI: false,
         // ARKit and the web renderer use opposite vertical conventions for
         // this capture, so turn the merged reconstruction over on the X axis.
         position: [0, 0, 0], rotation: [1, 0, 0, 0], scale: [1, 1, 1],
       })
+      ;(viewer.renderer as any)?.setClearColor?.(0xbeb9b0, 1)
+      if (guidedMode) {
+        if (viewer.controls) (viewer.controls as any).enabled = false
+        if ((viewer as any).perspectiveControls) (viewer as any).perspectiveControls.enabled = false
+        if ((viewer as any).orthographicControls) (viewer as any).orthographicControls.enabled = false
+        const response = await fetch('/runtime/camera-path.json')
+        if (!response.ok) throw new Error('Could not load guided camera path')
+        guidedRef.current = installGuidedControls(viewer, rootRef.current, await response.json())
+      }
       setProgress(94); viewer.start(); setProgress(100); setStatus('ready')
     } catch (error) { console.error(error); setStatus('error'); await destroy() }
   }, [destroy, status])
@@ -261,10 +385,13 @@ function SplatViewer() {
 
   useEffect(() => () => { void destroy() }, [destroy])
 
-  const reset = () => { const viewer = viewerRef.current; viewer?.camera?.position?.set(1, -4, 6); viewer?.controls?.target?.set(0, 0, 0); viewer?.controls?.update?.() }
+  const reset = () => {
+    if (guidedRef.current) return guidedRef.current.reset()
+    const viewer = viewerRef.current; viewer?.camera?.position?.set(1, -4, 6); viewer?.controls?.target?.set(0, 0, 0); viewer?.controls?.update?.()
+  }
   const fullscreen = () => sectionRef.current?.requestFullscreen?.()
 
-  return <div ref={sectionRef} className="relative h-[72vh] min-h-[520px] max-h-[880px] bg-[#080808]">
+  return <div ref={sectionRef} tabIndex={0} className={guidedMode ? "relative h-screen w-screen bg-[#beb9b0] outline-none" : "relative h-[72vh] min-h-[520px] max-h-[880px] bg-[#080808] outline-none"}>
     <div ref={rootRef} className="absolute inset-0" />
     {status !== 'ready' && <div className="absolute inset-0 z-10 grid place-items-center bg-[#0a0a0a]">
       <div className="w-[300px] text-center">
@@ -272,7 +399,7 @@ function SplatViewer() {
       </div>
     </div>}
     {status === 'ready' && <>
-      <div className="pointer-events-none absolute left-5 top-5 rounded-xl border border-white/10 bg-black/65 px-4 py-3 backdrop-blur md:left-7 md:top-7"><p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/45">Interactive scene</p><p className="mt-1.5 text-sm font-medium">Drag to orbit · scroll to zoom</p></div>
+      <div className="pointer-events-none absolute left-5 top-5 rounded-xl border border-white/10 bg-black/65 px-4 py-3 backdrop-blur md:left-7 md:top-7"><p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/45">Interactive scene</p><p className="mt-1.5 text-sm font-medium">{guidedMode ? 'Drag to look · WASD to move · Ctrl up / Space down · boundary locked' : 'Drag to orbit · scroll to zoom'}</p></div>
       <div className="absolute bottom-5 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-black/75 p-1.5 backdrop-blur">
         <ViewerButton label="Orbit"><MousePointer2 className="h-4 w-4" /></ViewerButton><ViewerButton label="Reset" onClick={reset}><RotateCcw className="h-4 w-4" /></ViewerButton><ViewerButton label="Fullscreen" onClick={fullscreen}><Maximize className="h-4 w-4" /></ViewerButton>
       </div>
