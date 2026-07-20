@@ -7,6 +7,8 @@ DATASET="${2:-${ROOT}/data/statue}"
 WORK="${DATASET}/colmap-work"
 MATCHER="${3:-sequential}"
 COLMAP_GPU="${COLMAP_GPU:-0}"
+CAMERA_MODEL="${COLMAP_CAMERA_MODEL:-OPENCV}"
+CAMERA_PARAMS="${COLMAP_CAMERA_PARAMS:-}"
 
 command -v colmap >/dev/null || {
   echo "COLMAP is required (brew install colmap)." >&2
@@ -26,13 +28,19 @@ fi
 
 mkdir -p "${WORK}/sparse" "${DATASET}"
 
-colmap feature_extractor \
-  --database_path "${WORK}/database.db" \
-  --image_path "${IMAGES}" \
-  --ImageReader.single_camera 1 \
-  --ImageReader.camera_model OPENCV \
-  --FeatureExtraction.use_gpu "${COLMAP_GPU}" \
+FEATURE_ARGS=(
+  --database_path "${WORK}/database.db"
+  --image_path "${IMAGES}"
+  --ImageReader.single_camera 1
+  --ImageReader.camera_model "${CAMERA_MODEL}"
+  --FeatureExtraction.use_gpu "${COLMAP_GPU}"
   --FeatureExtraction.max_image_size 2000
+)
+if [[ -n "${CAMERA_PARAMS}" ]]; then
+  FEATURE_ARGS+=(--ImageReader.camera_params "${CAMERA_PARAMS}")
+fi
+
+colmap feature_extractor "${FEATURE_ARGS[@]}"
 
 case "${MATCHER}" in
   sequential)

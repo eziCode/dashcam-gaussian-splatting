@@ -28,9 +28,19 @@ struct ContentView: View {
         .sheet(isPresented: $showingViewer) {
             if let url = capture.latestCaptureURL {
                 NavigationStack {
-                    PointCloudView(captureURL: url)
-                        .ignoresSafeArea(edges: .bottom)
-                        .navigationTitle("LiDAR Capture")
+                    Group {
+                        if capture.latestCaptureHasDepth {
+                            PointCloudView(captureURL: url)
+                                .ignoresSafeArea(edges: .bottom)
+                        } else {
+                            ContentUnavailableView(
+                                "RGB Capture Ready",
+                                systemImage: "photo.stack",
+                                description: Text("Export this capture and reconstruct it on your Mac to view it in 3D.")
+                            )
+                        }
+                    }
+                        .navigationTitle(capture.latestCaptureHasDepth ? "LiDAR Capture" : "RGB Capture")
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
                             ToolbarItem(placement: .confirmationAction) {
@@ -124,10 +134,10 @@ struct ContentView: View {
         VStack(spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(capture.isRecording ? "Capturing scene" : capture.latestCaptureURL == nil ? "Ready to scan" : "Capture ready")
+                    Text(capture.isRecording ? "Capturing scene" : capture.latestCaptureURL == nil ? "Ready to capture" : "Capture ready")
                         .font(.title3.weight(.bold))
                         .foregroundStyle(Brand.charcoal)
-                    Text(capture.isRecording ? "Move slowly and keep surfaces in view." : "Record a complete view of the surrounding area.")
+                    Text(capture.isRecording ? "Move slowly and keep surfaces in view." : capture.hasLiDAR ? "Record a complete view of the surrounding area." : "Record overlapping views for Mac reconstruction.")
                         .font(.subheadline)
                         .foregroundStyle(Brand.charcoal.opacity(0.65))
                 }

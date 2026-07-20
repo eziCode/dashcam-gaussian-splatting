@@ -4,13 +4,13 @@ The app records calibrated RGB, LiDAR depth, confidence, intrinsics, and ARKit p
 
 ## Capture
 
-Run `iPhoneLIDAR.xcodeproj` on a LiDAR-equipped iPhone and tap the record button. After recording, tap **Export Capture** to create a ZIP and open the native share sheet; select AirDrop to transfer it directly to the Mac. Raw captures are also stored under:
+Run `iPhoneLIDAR.xcodeproj` on an ARKit-capable iPhone and tap the record button. On a LiDAR device the app records RGB, scene depth, and confidence. On other iPhones it records RGB plus the camera calibration, visual-inertial pose, and timestamp needed by the repository's Mac-only COLMAP reconstruction path. After recording, tap **Export Capture** to create a ZIP and open the native share sheet; select AirDrop to transfer it directly to the Mac. Raw captures are also stored under:
 
 ```text
 Files → On My iPhone → iPhoneLIDAR → LiDARCaptures
 ```
 
-`View 3D Capture` is an immediate LiDAR point-cloud preview. It is not a trained Gaussian splat.
+`View 3D Capture` is an immediate LiDAR point-cloud preview when depth is available. RGB-only captures must be reconstructed on the Mac before they can be viewed in 3D. The preview is not a trained Gaussian splat.
 
 ## Render a Gaussian splat on iPhone
 

@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATASET="${1:-${ROOT}/data/statue}"
 ITERATIONS="${2:-2000}"
+OUTPUT_ROOT="${3:-${ROOT}/outputs}"
 VENV="${ROOT}/.venv-apple"
 UPSTREAM="${ROOT}/third_party/splat-apple"
 
@@ -24,9 +25,9 @@ fi
 
 DATASET="$(cd "${DATASET}" && pwd)"
 
-mkdir -p "${ROOT}/outputs"
+mkdir -p "${OUTPUT_ROOT}"
 (
-  cd "${ROOT}/outputs"
+  cd "${OUTPUT_ROOT}"
   PYTHONPATH="${UPSTREAM}" "${VENV}/bin/python" "${UPSTREAM}/train_mlx.py" \
     --data_dir "${DATASET}" \
     --img_folder images \
@@ -35,5 +36,5 @@ mkdir -p "${ROOT}/outputs"
     --normalize
 )
 
-LATEST="$(find "${ROOT}/outputs/results" -type f -name '*_final.ply' -print0 | xargs -0 ls -t | head -1)"
+LATEST="$(find "${OUTPUT_ROOT}/results" -type f -name '*_final.ply' -print0 | xargs -0 ls -t | head -1)"
 echo "Finished splat: ${LATEST}"
