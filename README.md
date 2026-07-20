@@ -43,6 +43,39 @@ The optional training arguments are the dataset path and iteration count:
 ./scripts/train_apple.sh data/statue 2000
 ```
 
+## RGB-only iPhone reconstruction on a Mac
+
+LiDAR is optional for the trained reconstruction path. The iPhone app now
+records RGB images, camera intrinsics, ARKit visual-inertial poses, and
+timestamps on any ARKit-capable iPhone. LiDAR devices additionally retain the
+existing depth and confidence files.
+
+Export a capture ZIP from the app, then run the complete CPU COLMAP + Apple MLX
+pipeline:
+
+```bash
+cd gaussian-splatting-pipeline
+./scripts/setup_apple.sh
+./scripts/run_iphone_apple.sh ~/Downloads/20260720-120000.zip my_room 3 2000
+./scripts/view_apple.sh
+```
+
+The arguments after the ZIP are the unique run name, frame stride, and MLX
+training iterations. A stride of 3 turns the app's roughly 10 FPS capture into
+about 3.3 images per second, reducing redundant COLMAP work. Each run is kept
+under `runs/<run-name>/` and is never overwritten.
+
+The converter rotates the ARKit calibration to match the JPEG orientation and
+uses it to initialize a shared COLMAP PINHOLE camera. COLMAP still estimates
+and refines camera poses from image overlap; the exported ARKit poses remain in
+`capture_manifest.json` for validation and future pose-prior integration.
+
+For the best reconstruction, lock the phone to one rear lens, move slowly,
+keep each surface visible from several viewpoints, avoid motion blur, and make
+a wide loop rather than rotating from one spot. RGB-only reconstruction needs
+texture and parallax; blank walls, reflections, and moving subjects remain
+difficult.
+
 The final viewer-compatible PLY is written below `outputs/results/`. Progress
 renders are saved alongside it. The viewer serves an interactive page at
 `http://localhost:8080`. The preparation step is intentionally

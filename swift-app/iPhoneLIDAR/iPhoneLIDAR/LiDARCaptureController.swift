@@ -13,8 +13,13 @@ final class LiDARCaptureController: NSObject, ObservableObject, ARSessionDelegat
     @Published private(set) var latestCaptureURL: URL?
     @Published var errorMessage: String?
 
-    var isSupported: Bool {
-        ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+    var isSupported: Bool { ARWorldTrackingConfiguration.isSupported }
+    var hasLiDAR: Bool { ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) }
+    var latestCaptureHasDepth: Bool {
+        guard let latestCaptureURL else { return false }
+        let depth = latestCaptureURL.appendingPathComponent("depth", isDirectory: true)
+        return ((try? FileManager.default.contentsOfDirectory(at: depth, includingPropertiesForKeys: nil)) ?? [])
+            .contains { $0.pathExtension == "bin" }
     }
 
     private let writerQueue = DispatchQueue(label: "com.iphoneLIDAR.frame-writer", qos: .userInitiated)
@@ -28,14 +33,16 @@ final class LiDARCaptureController: NSObject, ObservableObject, ARSessionDelegat
         super.init()
         session.delegate = self
         session.delegateQueue = .main
-        status = isSupported ? "LiDAR ready" : "This device has no LiDAR scene depth"
+        status = isSupported ? (hasLiDAR ? "LiDAR ready" : "RGB reconstruction ready") : "ARKit is unavailable"
         latestCaptureURL = Self.findLatestCapture()
     }
 
     func startSession() {
         guard isSupported else { return }
         let configuration = ARWorldTrackingConfiguration()
-        configuration.frameSemantics.insert(.sceneDepth)
+        if hasLiDAR {
+            configuration.frameSemantics.insert(.sceneDepth)
+        }
         configuration.worldAlignment = .gravity
         session.run(configuration)
     }
@@ -98,16 +105,15 @@ final class LiDARCaptureController: NSObject, ObservableObject, ARSessionDelegat
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         guard isRecording,
               frame.timestamp - lastSavedTimestamp >= captureInterval,
-              let directory = sessionDirectory,
-              let depth = frame.sceneDepth,
-              let confidenceMap = depth.confidenceMap else { return }
+              let directory = sessionDirectory else { return }
 
         lastSavedTimestamp = frame.timestamp
         let index = frameCount
         frameCount += 1
 
         let cameraImage = frame.capturedImage
-        let depthMap = depth.depthMap
+        let depthMap = frame.sceneDepth?.depthMap
+        let confidenceMap = frame.sceneDepth?.confidenceMap
         let intrinsics = frame.camera.intrinsics
         let transform = frame.camera.transform
         let timestamp = frame.timestamp
@@ -117,16 +123,18 @@ final class LiDARCaptureController: NSObject, ObservableObject, ARSessionDelegat
             do {
                 let stem = String(format: "%06d", index)
                 try self.writeJPEG(cameraImage, to: directory.appendingPathComponent("rgb/\(stem).jpg"))
-                try Self.writePixelBuffer(depthMap, to: directory.appendingPathComponent("depth/\(stem).bin"))
-                try Self.writePixelBuffer(confidenceMap, to: directory.appendingPathComponent("confidence/\(stem).bin"))
+                if let depthMap, let confidenceMap {
+                    try Self.writePixelBuffer(depthMap, to: directory.appendingPathComponent("depth/\(stem).bin"))
+                    try Self.writePixelBuffer(confidenceMap, to: directory.appendingPathComponent("confidence/\(stem).bin"))
+                }
 
                 let record = FrameMetadata(
                     index: index,
                     timestamp: timestamp,
                     imageWidth: CVPixelBufferGetWidth(cameraImage),
                     imageHeight: CVPixelBufferGetHeight(cameraImage),
-                    depthWidth: CVPixelBufferGetWidth(depthMap),
-                    depthHeight: CVPixelBufferGetHeight(depthMap),
+                    depthWidth: depthMap.map { CVPixelBufferGetWidth($0) },
+                    depthHeight: depthMap.map { CVPixelBufferGetHeight($0) },
                     intrinsics: Self.flatten(intrinsics),
                     cameraTransform: Self.flatten(transform)
                 )
@@ -204,8 +212,8 @@ private struct FrameMetadata: Codable {
     let timestamp: TimeInterval
     let imageWidth: Int
     let imageHeight: Int
-    let depthWidth: Int
-    let depthHeight: Int
+    let depthWidth: Int?
+    let depthHeight: Int?
     let intrinsics: [Float]
     let cameraTransform: [Float]
 }
