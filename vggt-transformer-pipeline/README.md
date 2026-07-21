@@ -47,3 +47,19 @@ to calibrated camera centers, rejects chunks without sufficient parallax or
 good alignment, applies dynamic-object masks, confidence filters inferred
 depth, and voxel-fuses the accepted surfaces. A JSON provenance record is saved
 beside every output scene.
+
+## High-quality evidence-only reconstruction
+
+The high-quality preset processes every frame from agents 2 and 3 in
+eight-frame temporal windows, uses full VGGT output resolution, exports locally
+oriented depth-map surfels, keeps the highest-confidence recorded color per
+voxel instead of averaging misaligned colors, and uses a finer spatial grid:
+
+```bash
+./scripts/run_cooperscene_high_quality_apple.sh \
+  ../gaussian-splatting-pipeline/runs/cooperscene_demo/colmap \
+  runs/cooperscene_demo/scene-high-quality.ply
+```
+
+No views or pixels are generated. Agent 1 is omitted because its measured
+camera motion is insufficient to recover a defensible metric depth scale.

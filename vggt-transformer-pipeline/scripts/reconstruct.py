@@ -200,23 +200,66 @@ def inference(model, images: torch.Tensor, device: torch.device):
     )
 
 
-def voxel_fuse(points: np.ndarray, colors: np.ndarray, confidence: np.ndarray, voxel: float):
+def rotation_matrices_to_quaternions(matrices: np.ndarray) -> np.ndarray:
+    """Convert 3x3 matrices to normalized wxyz quaternions."""
+    quaternions = np.zeros((len(matrices), 4), dtype=np.float32)
+    m = matrices
+    trace = m[:, 0, 0] + m[:, 1, 1] + m[:, 2, 2]
+    positive = trace > 0
+    s = np.sqrt(np.maximum(trace[positive] + 1.0, 1e-12)) * 2
+    quaternions[positive, 0] = .25*s
+    quaternions[positive, 1] = (m[positive,2,1]-m[positive,1,2])/s
+    quaternions[positive, 2] = (m[positive,0,2]-m[positive,2,0])/s
+    quaternions[positive, 3] = (m[positive,1,0]-m[positive,0,1])/s
+    remaining = ~positive
+    for axis in range(3):
+        use = remaining & (np.argmax(np.diagonal(m, axis1=1, axis2=2), axis=1) == axis)
+        if not np.any(use): continue
+        other1, other2 = (axis+1)%3, (axis+2)%3
+        s = np.sqrt(np.maximum(1+m[use,axis,axis]-m[use,other1,other1]-m[use,other2,other2], 1e-12))*2
+        quaternions[use, axis+1] = .25*s
+        quaternions[use, 0] = (m[use,other2,other1]-m[use,other1,other2])/s
+        quaternions[use, other1+1] = (m[use,axis,other1]+m[use,other1,axis])/s
+        quaternions[use, other2+1] = (m[use,axis,other2]+m[use,other2,axis])/s
+    quaternions /= np.maximum(np.linalg.norm(quaternions, axis=1, keepdims=True), 1e-8)
+    return quaternions
+
+
+def surface_attributes(points: np.ndarray, voxel: float):
+    """Estimate an oriented elliptical footprint from each depth-map pixel."""
+    tangent_x = np.gradient(points, axis=2)
+    tangent_y_raw = np.gradient(points, axis=1)
+    length_x = np.linalg.norm(tangent_x, axis=-1)
+    tangent_x /= np.maximum(length_x[..., None], 1e-8)
+    normal = np.cross(tangent_x, tangent_y_raw)
+    normal /= np.maximum(np.linalg.norm(normal, axis=-1, keepdims=True), 1e-8)
+    tangent_y = np.cross(normal, tangent_x)
+    tangent_y /= np.maximum(np.linalg.norm(tangent_y, axis=-1, keepdims=True), 1e-8)
+    length_y = np.abs(np.sum(tangent_y_raw * tangent_y, axis=-1))
+    minimum, maximum = voxel * 0.18, voxel * 3.0
+    scale_x = np.clip(length_x * 0.72, minimum, maximum)
+    scale_y = np.clip(length_y * 0.72, minimum, maximum)
+    thickness = np.clip(np.minimum(scale_x, scale_y) * 0.08, voxel * 0.025, voxel * 0.18)
+    scales = np.stack([scale_x, scale_y, thickness], axis=-1).astype(np.float32)
+    matrices = np.stack([tangent_x, tangent_y, normal], axis=-1).reshape(-1, 3, 3)
+    quaternions = rotation_matrices_to_quaternions(matrices).reshape(points.shape[:-1] + (4,))
+    return scales, quaternions
+
+
+def voxel_fuse(points: np.ndarray, colors: np.ndarray, confidence: np.ndarray,
+               scales: np.ndarray, quaternions: np.ndarray, voxel: float):
+    """Keep the highest-confidence measured observation in each voxel."""
     keys = np.floor(points / voxel).astype(np.int64)
-    _, inverse = np.unique(keys, axis=0, return_inverse=True)
-    count = np.bincount(inverse).astype(np.float64)
-    weight = np.maximum(confidence, 1e-6)
-    total_weight = np.bincount(inverse, weights=weight)
-    fused_points = np.column_stack([
-        np.bincount(inverse, weights=points[:, axis] * weight) / total_weight for axis in range(3)
-    ])
-    fused_colors = np.column_stack([
-        np.bincount(inverse, weights=colors[:, axis] * weight) / total_weight for axis in range(3)
-    ])
-    fused_confidence = np.bincount(inverse, weights=confidence) / count
-    return fused_points.astype(np.float32), fused_colors.astype(np.float32), fused_confidence.astype(np.float32)
+    order = np.lexsort((-confidence, keys[:, 2], keys[:, 1], keys[:, 0]))
+    sorted_keys = keys[order]
+    first = np.ones(len(order), dtype=bool)
+    first[1:] = np.any(sorted_keys[1:] != sorted_keys[:-1], axis=1)
+    selected = order[first]
+    return points[selected], colors[selected], confidence[selected], scales[selected], quaternions[selected]
 
 
-def save_surfel_ply(path: Path, points: np.ndarray, colors: np.ndarray, scale: float):
+def save_surfel_ply(path: Path, points: np.ndarray, colors: np.ndarray,
+                    scales: np.ndarray, quaternions: np.ndarray):
     sh = (np.clip(colors, 0, 1) - 0.5) / 0.28209479177387814
     fields = [
         (name, "f4") for name in (
@@ -230,9 +273,10 @@ def save_surfel_ply(path: Path, points: np.ndarray, colors: np.ndarray, scale: f
     for axis, name in enumerate(("f_dc_0", "f_dc_1", "f_dc_2")):
         vertices[name] = sh[:, axis]
     vertices["opacity"] = math.log(0.85 / 0.15)
-    for name in ("scale_0", "scale_1", "scale_2"):
-        vertices[name] = math.log(scale)
-    vertices["rot_0"] = 1.0
+    for axis, name in enumerate(("scale_0", "scale_1", "scale_2")):
+        vertices[name] = np.log(np.maximum(scales[:, axis], 1e-7))
+    for axis, name in enumerate(("rot_0", "rot_1", "rot_2", "rot_3")):
+        vertices[name] = quaternions[:, axis]
     path.parent.mkdir(parents=True, exist_ok=True)
     PlyData([PlyElement.describe(vertices, "vertex")], text=False).write(path)
 
@@ -283,7 +327,7 @@ def main() -> None:
         raise SystemExit("No image chunks were selected")
     print(f"Selected {len(chunks)} chunks from {len(names)} registered images")
 
-    all_points, all_colors, all_confidence, reports = [], [], [], []
+    all_points, all_colors, all_confidence, all_scales, all_quaternions, reports = [], [], [], [], [], []
     per_chunk_limit = max(20_000, math.ceil(args.max_points * 1.5 / len(chunks)))
     for chunk_index, chunk_names in enumerate(chunks, 1):
         paths = [args.dataset / "images" / name for name in chunk_names]
@@ -309,6 +353,7 @@ def main() -> None:
             source_centers, target_centers, rotation_hint=orientation_sum
         )
         points = align_scale * (points @ rotation.T) + translation
+        surfel_scales, surfel_quaternions = surface_attributes(points, args.voxel_size)
         colors = images.float().cpu().numpy().transpose(0, 2, 3, 1)
 
         if not np.isfinite(rmse) or rmse > args.max_alignment_rmse:
@@ -339,12 +384,15 @@ def main() -> None:
         selected_points = points[valid]
         selected_colors = colors[valid]
         selected_confidence = confidence[valid]
+        selected_scales = surfel_scales[valid]
+        selected_quaternions = surfel_quaternions[valid]
         distance = np.min(
             np.linalg.norm(selected_points[:, None, :] - target_centers[None, :, :], axis=2), axis=1
         )
         near = distance <= args.max_point_distance
         selected_points, selected_colors = selected_points[near], selected_colors[near]
         selected_confidence = selected_confidence[near]
+        selected_scales, selected_quaternions = selected_scales[near], selected_quaternions[near]
         if not len(selected_points):
             reports.append({"images": chunk_names, "alignmentRmse": rmse, "points": 0, "rejected": "no supported points"})
             print("  rejected chunk: no supported points remained")
@@ -356,9 +404,12 @@ def main() -> None:
             choice = np.random.choice(len(selected_points), per_chunk_limit, replace=False)
             selected_points, selected_colors = selected_points[choice], selected_colors[choice]
             selected_confidence = selected_confidence[choice]
+            selected_scales, selected_quaternions = selected_scales[choice], selected_quaternions[choice]
         all_points.append(selected_points.astype(np.float32))
         all_colors.append(selected_colors.astype(np.float32))
         all_confidence.append(selected_confidence.astype(np.float32))
+        all_scales.append(selected_scales.astype(np.float32))
+        all_quaternions.append(selected_quaternions.astype(np.float32))
         reports.append({"images": chunk_names, "cameraSpan": target_span, "alignmentRmse": rmse, "points": len(selected_points)})
         del images, depth, confidence, points
         if device.type == "mps":
@@ -367,14 +418,18 @@ def main() -> None:
     if not all_points:
         raise SystemExit("Every VGGT chunk failed calibrated alignment; try a smaller frame stride or a different agent")
     points = np.concatenate(all_points); colors = np.concatenate(all_colors); confidence = np.concatenate(all_confidence)
-    points, colors, confidence = voxel_fuse(points, colors, confidence, args.voxel_size)
+    scales = np.concatenate(all_scales); quaternions = np.concatenate(all_quaternions)
+    points, colors, confidence, scales, quaternions = voxel_fuse(
+        points, colors, confidence, scales, quaternions, args.voxel_size
+    )
     if len(points) > args.max_points:
         # Confidence-weighted random sampling preserves broad coverage while
         # favoring surfaces the model considered reliable.
         probability = confidence / confidence.sum()
         choice = np.random.choice(len(points), args.max_points, replace=False, p=probability)
         points, colors, confidence = points[choice], colors[choice], confidence[choice]
-    save_surfel_ply(args.output, points, colors, args.voxel_size * 0.35)
+        scales, quaternions = scales[choice], quaternions[choice]
+    save_surfel_ply(args.output, points, colors, scales, quaternions)
     provenance = {
         "method": "VGGT feed-forward depth and camera transformer; no Gaussian optimization",
         "model": args.model,
