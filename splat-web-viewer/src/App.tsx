@@ -104,7 +104,7 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
 
   const direction = () => {
     const forward = baseForward.clone().applyAxisAngle(sceneUp, yaw).normalize()
-    const right = sceneUp.clone().cross(forward).normalize()
+    const right = forward.clone().cross(sceneUp).normalize()
     return forward.applyAxisAngle(right, pitch).normalize()
   }
   const renderCamera = () => {
@@ -154,14 +154,14 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
     lastTime = now
     const look = direction()
     const forward = look.clone().addScaledVector(sceneUp, -look.dot(sceneUp)).normalize()
-    const right = sceneUp.clone().cross(forward).normalize()
+    const right = forward.clone().cross(sceneUp).normalize()
     const movement = new THREE.Vector3()
     if (keys.has('KeyW') || keys.has('ArrowUp')) movement.add(forward)
     if (keys.has('KeyS') || keys.has('ArrowDown')) movement.sub(forward)
     if (keys.has('KeyD') || keys.has('ArrowRight')) movement.add(right)
     if (keys.has('KeyA') || keys.has('ArrowLeft')) movement.sub(right)
-    if (keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyE')) movement.y += 1
-    if (keys.has('Space') || keys.has('KeyQ')) movement.y -= 1
+    if (keys.has('Space') || keys.has('KeyE')) movement.add(sceneUp)
+    if (keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyQ')) movement.sub(sceneUp)
     if (movement.lengthSq()) { movement.normalize().multiplyScalar(dt * .7); tryMove(movement.x, movement.y, movement.z) }
     renderCamera()
     frame = requestAnimationFrame(animate)
@@ -507,7 +507,7 @@ function SplatViewer() {
       </div>
     </div>}
     {status === 'ready' && <>
-      <div className="pointer-events-none absolute left-5 top-5 rounded-xl border border-white/10 bg-black/65 px-4 py-3 backdrop-blur md:left-7 md:top-7"><p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/45">Interactive scene</p><p className="mt-1.5 text-sm font-medium">{guidedMode ? 'Drag to look · WASD to move · Ctrl up / Space down · boundary locked' : 'Drag to orbit · scroll to zoom'}</p></div>
+      <div className="pointer-events-none absolute left-5 top-5 rounded-xl border border-white/10 bg-black/65 px-4 py-3 backdrop-blur md:left-7 md:top-7"><p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/45">Interactive scene</p><p className="mt-1.5 text-sm font-medium">{guidedMode ? 'Drag to look · WASD to move · Space up / Ctrl down · boundary locked' : 'Drag to orbit · scroll to zoom'}</p></div>
       <div className="absolute bottom-5 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-black/75 p-1.5 backdrop-blur">
         <ViewerButton label="Recorded view" onClick={() => guidedRef.current?.nextRecordedView?.()}><Camera className="h-4 w-4" /></ViewerButton><ViewerButton label="Reset" onClick={reset}><RotateCcw className="h-4 w-4" /></ViewerButton><ViewerButton label="Fullscreen" onClick={fullscreen}><Maximize className="h-4 w-4" /></ViewerButton>
       </div>
