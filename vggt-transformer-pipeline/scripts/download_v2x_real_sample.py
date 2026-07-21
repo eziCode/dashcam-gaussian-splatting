@@ -34,8 +34,9 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--start-index", type=int, default=24,
                         help="Start within the stride-filtered timeline (default targets the intersection midpoint)")
     parser.add_argument("--vehicle-camera", default="cam1")
-    parser.add_argument("--infrastructure-camera", default="cam1")
-    parser.add_argument("--max-download-mb", type=float, default=40.0)
+    parser.add_argument("--infrastructure-cameras", nargs="+", default=["cam1", "cam2"])
+    parser.add_argument("--max-download-mb", type=float, default=60.0)
+    parser.add_argument("--metadata-only", action="store_true", help="Download YAML poses only")
     return parser.parse_args()
 
 
@@ -123,8 +124,11 @@ def choose_members(archive: zipfile.ZipFile, args: argparse.Namespace) -> tuple[
     selected: list[zipfile.ZipInfo] = []
     for frame in selected_frames:
         for agent in ("-1", "-2", "1", "2"):
-            camera = args.infrastructure_camera if agent.startswith("-") else args.vehicle_camera
-            for filename in (f"{frame}.yaml", f"{frame}_{camera}.jpeg"):
+            cameras = args.infrastructure_cameras if agent.startswith("-") else [args.vehicle_camera]
+            filenames = [f"{frame}.yaml"]
+            if not args.metadata_only:
+                filenames.extend(f"{frame}_{camera}.jpeg" for camera in cameras)
+            for filename in filenames:
                 info = entries.get((scene, agent, filename))
                 if info is None:
                     raise RuntimeError(f"Missing synchronized member: {scene}/{agent}/{filename}")
@@ -164,7 +168,9 @@ def main() -> None:
                 f"above the {args.max_download_mb:.1f} MiB limit"
             )
         print(f"Scene: {scene}")
-        print(f"Downloading {len(members) // 2} RGB views and {len(members) // 2} metadata files "
+        image_count = sum(info.filename.endswith(".jpeg") for info in members)
+        metadata_count = sum(info.filename.endswith(".yaml") for info in members)
+        print(f"Downloading {image_count} RGB views and {metadata_count} metadata files "
               f"({compressed / 1024 / 1024:.1f} MiB compressed); LiDAR excluded")
         for index, info in enumerate(members, 1):
             print(f"[{index}/{len(members)}] {info.filename}")

@@ -2,11 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SAMPLE="${1:-$ROOT/data/v2x-real-tiny-mid}"
-OUTPUT="${2:-$ROOT/runs/v2x-real-mid/scene.ply}"
-PREPARED="${3:-$ROOT/runs/v2x-real-mid/prepared}"
+SAMPLE="${1:-$ROOT/data/v2x-real-connected}"
+OUTPUT="${2:-$ROOT/runs/v2x-real-connected/scene.ply}"
+PREPARED="${3:-$ROOT/runs/v2x-real-connected/prepared}"
 
-"$ROOT/.venv/bin/python" "$ROOT/scripts/prepare_v2x_real.py" "$SAMPLE" "$PREPARED"
+"$ROOT/.venv/bin/python" "$ROOT/scripts/prepare_v2x_real.py" "$SAMPLE" "$PREPARED" --max-frame 60
 "$ROOT/.venv/bin/python" "$ROOT/scripts/reconstruct.py" \
   "$PREPARED" "$OUTPUT" \
   --chunk-mode timestep \
@@ -14,13 +14,16 @@ PREPARED="${3:-$ROOT/runs/v2x-real-mid/prepared}"
   --timesteps-per-chunk 1 \
   --chunk-overlap 0 \
   --alignment-mode calibrated-cameras \
-  --calibrated-depth-scale 1.79 \
-  --confidence-percentile 70 \
+  --calibrated-depth-scale 2.0 \
+  --original-rgb-colors \
+  --confidence-percentile 60 \
   --pixel-stride 1 \
   --voxel-size 0.0025 \
-  --max-points 1200000 \
-  --min-chunk-support 2 \
+  --max-points 2000000 \
+  --min-chunk-support 1 \
   --support-voxel-size 0.02 \
-  --min-camera-span 0.01
+  --min-camera-span 0.002 \
+  --max-point-distance 2.0 \
+  --max-relative-depth-gradient 0.12
 
 echo "Transformer scene: $OUTPUT"

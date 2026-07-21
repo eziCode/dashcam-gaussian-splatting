@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 from plyfile import PlyData, PlyElement
 
 
@@ -38,6 +38,7 @@ from vggt.utils.pose_enc import pose_encoding_to_extri_intri  # noqa: E402
 
 TIMESTEP = re.compile(r"^t(\d+)_")
 AGENT = re.compile(r"_a(\d+)_")
+CAMERA = re.compile(r"_c(\d+)(?:\.|_)")
 
 
 class CameraInfo:
@@ -110,6 +111,8 @@ def arguments() -> argparse.Namespace:
                         help="Align VGGT cameras jointly, or place inferred camera-local depth at supplied poses")
     parser.add_argument("--calibrated-depth-scale", type=float,
                         help="Use one fixed VGGT-to-scene depth scale for every calibrated-camera chunk")
+    parser.add_argument("--stream-depth-scale", action="append", default=[], metavar="AGENT:CAMERA=SCALE",
+                        help="Override calibrated depth scale for one physical camera stream")
     parser.add_argument("--min-camera-span", type=float, default=0.015,
                         help="Reject chunks without enough real camera translation to determine scale")
     parser.add_argument("--adaptive-anchors", type=int, default=0,
@@ -118,7 +121,36 @@ def arguments() -> argparse.Namespace:
                         help="Require this many independent chunks to support each coarse region")
     parser.add_argument("--support-voxel-size", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--original-rgb-colors", action="store_true",
+                        help="Color surfels from carefully resampled original-resolution RGB frames")
+    parser.add_argument("--max-relative-depth-gradient", type=float, default=0.0,
+                        help="Reject depth-discontinuity pixels above this relative neighbor gradient")
     return parser.parse_args()
+
+
+def load_original_rgb_colors(paths: list[Path], target_size: int = 518) -> np.ndarray:
+    """Match VGGT pad preprocessing while preserving source RGB detail."""
+    colors = []
+    for path in paths:
+        with Image.open(path) as source:
+            image = source.convert("RGB")
+            width, height = image.size
+            if width >= height:
+                new_width = target_size
+                new_height = round(height * (new_width / width) / 14) * 14
+            else:
+                new_height = target_size
+                new_width = round(width * (new_height / height) / 14) * 14
+            # Lanczos retains more high-frequency source color than the model's
+            # bicubic input. A restrained unsharp pass counters resize softness
+            # without synthesizing pixels or changing scene content.
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            image = image.filter(ImageFilter.UnsharpMask(radius=0.8, percent=55, threshold=3))
+            image = ImageEnhance.Contrast(image).enhance(1.03)
+            canvas = Image.new("RGB", (target_size, target_size), (255, 255, 255))
+            canvas.paste(image, ((target_size - new_width) // 2, (target_size - new_height) // 2))
+            colors.append(np.asarray(canvas, dtype=np.float32) / 255.0)
+    return np.stack(colors)
 
 
 def camera_centers(infos) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray, float]:
@@ -155,13 +187,16 @@ def calibrated_camera_transform(points: np.ndarray, extrinsics: np.ndarray,
             if source > 1e-5 and target > 1e-5:
                 source_distances.append(source)
                 target_distances.append(target)
-    if not source_distances:
+    if not source_distances and fixed_scale is None:
         raise ValueError("VGGT did not predict a usable camera baseline")
-    ratios = np.asarray(target_distances) / np.asarray(source_distances)
-    measured_scale = float(np.median(ratios))
+    ratios = np.asarray(target_distances) / np.asarray(source_distances) if source_distances else np.asarray([])
+    measured_scale = float(np.median(ratios)) if len(ratios) else float(fixed_scale)
     scale = fixed_scale if fixed_scale is not None else measured_scale
-    relative_error = float(np.median(np.abs(np.asarray(source_distances) * scale - target_distances)
-                                     / np.maximum(target_distances, 1e-6)))
+    relative_error = (
+        float(np.median(np.abs(np.asarray(source_distances) * scale - target_distances)
+                        / np.maximum(target_distances, 1e-6)))
+        if source_distances else 0.0
+    )
     transformed = np.empty_like(points)
     for frame in range(len(points)):
         predicted_rotation = extrinsics[frame, :3, :3]
@@ -239,7 +274,9 @@ def make_chunks(names: list[str], frame_stride: int, size: int, overlap: int,
     for name in names:
         timestep, agent = TIMESTEP.match(Path(name).name), AGENT.search(Path(name).name)
         if timestep and agent and (selected_agents is None or agent.group(1) in selected_agents):
-            grouped.setdefault(agent.group(1), []).append((int(timestep.group(1)), name))
+            camera = CAMERA.search(Path(name).name)
+            stream = f"{agent.group(1)}:{camera.group(1) if camera else '0'}"
+            grouped.setdefault(stream, []).append((int(timestep.group(1)), name))
     if not grouped:
         selected = names[::frame_stride]
         step = max(1, size - overlap)
@@ -343,9 +380,9 @@ def surface_attributes(points: np.ndarray, voxel: float):
     # Large depth discontinuities used to create metre-wide surfels that
     # looked like blur streaks. Keep footprints below one fusion voxel; denser
     # sampling supplies coverage instead of oversized translucent ellipses.
-    minimum, maximum = voxel * 0.10, voxel * 0.70
-    scale_x = np.clip(length_x * 0.42, minimum, maximum)
-    scale_y = np.clip(length_y * 0.42, minimum, maximum)
+    minimum, maximum = voxel * 0.14, voxel * 1.25
+    scale_x = np.clip(length_x * 0.62, minimum, maximum)
+    scale_y = np.clip(length_y * 0.62, minimum, maximum)
     thickness = np.clip(np.minimum(scale_x, scale_y) * 0.06, voxel * 0.015, voxel * 0.08)
     scales = np.stack([scale_x, scale_y, thickness], axis=-1).astype(np.float32)
     matrices = np.stack([tangent_x, tangent_y, normal], axis=-1).reshape(-1, 3, 3)
@@ -409,6 +446,14 @@ def main() -> None:
     if not 0 <= args.chunk_overlap < args.timesteps_per_chunk:
         raise SystemExit("chunk overlap must be smaller than timesteps per chunk")
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
+    stream_scales = {}
+    for specification in args.stream_depth_scale:
+        try:
+            stream, value = specification.split("=", 1)
+            agent, camera = stream.split(":", 1)
+            stream_scales[(agent, camera)] = float(value)
+        except ValueError:
+            raise SystemExit(f"Invalid --stream-depth-scale {specification!r}; expected AGENT:CAMERA=SCALE")
 
     device_name = args.device
     if device_name == "auto":
@@ -461,7 +506,8 @@ def main() -> None:
         source_centers = predicted_centers(extrinsic)
         target_centers = np.asarray([known_centers[name] for name in chunk_names])
         target_span = float(np.max(np.linalg.norm(target_centers - target_centers.mean(0), axis=1)))
-        if target_span < args.min_camera_span:
+        fixed_calibrated = args.alignment_mode == "calibrated-cameras" and args.calibrated_depth_scale is not None
+        if target_span < args.min_camera_span and not fixed_calibrated:
             reports.append({"images": chunk_names, "cameraSpan": target_span, "points": 0, "rejected": "insufficient parallax"})
             print(f"  rejected chunk: measured camera span {target_span:.4f} < {args.min_camera_span:.4f}")
             del images, depth, confidence
@@ -469,11 +515,17 @@ def main() -> None:
                 torch.mps.empty_cache()
             continue
         if args.alignment_mode == "calibrated-cameras":
+            agent_match = AGENT.search(chunk_names[0])
+            camera_match = CAMERA.search(chunk_names[0])
+            stream_scale = stream_scales.get(
+                (agent_match.group(1), camera_match.group(1)) if agent_match and camera_match else ("", ""),
+                args.calibrated_depth_scale,
+            )
             try:
                 points, align_scale, rmse, measured_scale = calibrated_camera_transform(
                     points, extrinsic, target_centers,
                     np.asarray([known_rotations[name] for name in chunk_names]),
-                    args.calibrated_depth_scale,
+                    stream_scale,
                 )
             except ValueError as error:
                 reports.append({"images": chunk_names, "points": 0, "rejected": str(error)})
@@ -492,7 +544,11 @@ def main() -> None:
             )
             points = align_scale * (points @ rotation.T) + translation
         surfel_scales, surfel_quaternions = surface_attributes(points, args.voxel_size)
-        colors = images.float().cpu().numpy().transpose(0, 2, 3, 1)
+        colors = (
+            load_original_rgb_colors(paths, images.shape[-1])
+            if args.original_rgb_colors
+            else images.float().cpu().numpy().transpose(0, 2, 3, 1)
+        )
 
         if args.alignment_mode == "similarity" and (not np.isfinite(rmse) or rmse > args.max_alignment_rmse):
             reports.append({"images": chunk_names, "alignmentRmse": rmse, "points": 0, "rejected": "alignment"})
@@ -515,6 +571,11 @@ def main() -> None:
             if len(positive_depth):
                 low, high = np.percentile(positive_depth, [1, 99])
                 frame_valid &= (depth[frame, ..., 0] >= low) & (depth[frame, ..., 0] <= high)
+            if args.max_relative_depth_gradient > 0:
+                frame_depth = depth[frame, ..., 0]
+                gradient_y, gradient_x = np.gradient(frame_depth)
+                relative_gradient = np.maximum(np.abs(gradient_x), np.abs(gradient_y)) / np.maximum(frame_depth, 1e-5)
+                frame_valid &= relative_gradient <= args.max_relative_depth_gradient
             mask_path = args.dataset / "masks" / name
             if mask_path.is_file():
                 frame_valid &= preprocess_mask(mask_path)

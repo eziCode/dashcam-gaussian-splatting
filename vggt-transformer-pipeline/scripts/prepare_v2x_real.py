@@ -31,7 +31,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sample", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--camera", default="cam1")
+    parser.add_argument("--vehicle-camera", default="cam1")
+    parser.add_argument("--infrastructure-cameras", nargs="+", default=["cam1", "cam2"])
+    parser.add_argument("--max-frame", type=int, help="Exclude later source frames")
     args = parser.parse_args()
 
     images = args.output / "images"
@@ -41,11 +43,16 @@ def main() -> None:
         source = args.sample / source_agent
         if not source.is_dir():
             raise SystemExit(f"Missing V2X-Real agent directory: {source}")
-        for image_path in sorted(source.glob(f"*_{args.camera}.jpeg")):
+        cameras = args.infrastructure_cameras if kind == "infrastructure" else [args.vehicle_camera]
+        image_paths = [path for camera in cameras for path in source.glob(f"*_{camera}.jpeg")]
+        for image_path in sorted(image_paths):
             frame = image_path.name[:6]
+            if args.max_frame is not None and int(frame) > args.max_frame:
+                continue
+            camera_name = image_path.stem.split("_")[-1]
             metadata_path = source / f"{frame}.yaml"
             metadata = yaml.safe_load(metadata_path.read_text())
-            camera = metadata[args.camera]
+            camera = metadata[camera_name]
             platform_pose = list(map(float, metadata.get("true_ego_pose", metadata["lidar_pose"])))
             x, y, z, roll, yaw, pitch = platform_pose
             platform_to_world = rotation_from_rpy(roll, yaw, pitch)
@@ -57,7 +64,8 @@ def main() -> None:
             center = np.asarray([x, y, z]) + platform_to_world @ camera_to_platform[:3, 3]
             world_to_camera = camera_to_world.T
             translation = -world_to_camera @ center
-            name = f"t{frame}_a{agent}_c1.jpeg"
+            camera_index = int(camera_name.removeprefix("cam"))
+            name = f"t{frame}_a{agent}_c{camera_index}.jpeg"
             target = images / name
             if target.exists() or target.is_symlink():
                 target.unlink()
@@ -68,7 +76,7 @@ def main() -> None:
                 "agent": agent,
                 "sourceAgent": source_agent,
                 "agentType": kind,
-                "camera": args.camera,
+                "camera": camera_name,
                 "rotation": world_to_camera.tolist(),
                 "translation": translation.tolist(),
                 "center": center.tolist(),

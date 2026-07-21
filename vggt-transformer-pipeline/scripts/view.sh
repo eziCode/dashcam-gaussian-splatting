@@ -35,7 +35,7 @@ if [[ -f "${MANIFEST}" ]]; then
   export VITE_TIMELINE_URL="/runtime/timeline.json"
 elif [[ -f "${DATASET}/cameras.json" ]]; then
   "${ROOT}/.venv/bin/python" "${ROOT}/scripts/export_v2x_boxes.py" \
-    "${DATASET}" "${RUNTIME}/timeline.json"
+    "${DATASET}" "${RUNTIME}/timeline.json" --scene "${PLY}"
   export VITE_TIMELINE_URL="/runtime/timeline.json"
 else
   export VITE_TIMELINE_URL=""

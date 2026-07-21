@@ -78,9 +78,10 @@ different static background was measured at every instant.
 
 The official camera-inclusive test archive is about 26 GB. This command uses
 HTTP byte ranges to download only eight synchronized timesteps from one real
-intersection scene: the front RGB camera from each of two vehicles and one RGB
-camera from each of two roadside infrastructure units. LiDAR `.bin` members are
-never downloaded, and a 40 MiB safety limit is enforced by default.
+intersection scene: the front RGB camera from each of two vehicles and both
+traffic-camera feeds from each of two roadside infrastructure units. Vehicle
+side/rear cameras and LiDAR `.bin` members are never downloaded, and a 60 MiB
+safety limit is enforced by default.
 
 ```bash
 .venv/bin/python scripts/download_v2x_real_sample.py \
@@ -103,9 +104,19 @@ The global platform pose is composed with each optical-camera-to-platform
 calibration matrix, and one shared depth scale is used across all temporal
 chunks to prevent duplicated layer surfaces. Static output also requires
 support from multiple chunks.
+Surfel colors are resampled from the original 1920×1080 JPEGs with a restrained
+detail-preserving filter rather than copied from VGGT's softer model inputs.
+Each physical camera is reconstructed as its own temporal stream. A metric
+depth scale is anchored from the moving front-dashcam baseline, while calibrated
+poses perform the global merge; non-overlapping camera directions therefore do
+not distort one another's inferred camera graph.
 The high-quality preset samples every inferred depth pixel and caps each surfel
 footprint below one fusion voxel to avoid blurred streaks. The viewer exports a
 single static set of V2X vehicle annotations when timestep playback is disabled.
+Vehicle overlays are snapped to the nearest locally reconstructed road-height
+mode to compensate residual vertical monocular-depth error. Single-view RGB
+surfaces are retained with bounded footprints to reduce sampling gaps without
+generating content outside captured coverage.
 
 View the completed sample with:
 
