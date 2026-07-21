@@ -63,3 +63,13 @@ voxel instead of averaging misaligned colors, and uses a finer spatial grid:
 
 No views or pixels are generated. Agent 1 is omitted because its measured
 camera motion is insufficient to recover a defensible metric depth scale.
+
+## Time parameterization
+
+The reconstructed road environment is static and shared across time. When a
+CooperScene capture manifest is present beside the input dataset, `view.sh`
+automatically exports all synchronized frames and adds a timestep slider. Each
+frame records its source frame ID, available camera observations, and the
+position, orientation, identity, and dimensions of every tracked vehicle.
+Moving the slider changes only dynamic scene state; it does not pretend that a
+different static background was measured at every instant.

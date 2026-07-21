@@ -27,7 +27,15 @@ fi
 
 export VITE_GUIDED_MODE=1
 export VITE_SCENE_URL="/runtime/model.ply?v=$(date +%s)"
-export VITE_TIMELINE_URL=""
+RUN_ROOT="$(cd "${DATASET}/.." && pwd)"
+MANIFEST="${RUN_ROOT}/capture/cooperscene_manifest.json"
+if [[ -f "${MANIFEST}" ]]; then
+  "${ROOT}/.venv/bin/python" "${ROOT}/scripts/export_timeline.py" \
+    "${DATASET}" "${MANIFEST}" "${RUNTIME}/timeline.json"
+  export VITE_TIMELINE_URL="/runtime/timeline.json"
+else
+  export VITE_TIMELINE_URL=""
+fi
 export VITE_GEO_CONTEXT_URL=""
 echo "Open http://localhost:${PORT}/"
 cd "${WEB_ROOT}"

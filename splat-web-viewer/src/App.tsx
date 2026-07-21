@@ -52,7 +52,7 @@ async function installGeoContext(viewer: any, root: HTMLElement, context: GeoCon
   return { context, dispose: () => { evidence.remove(); attribution.remove(); viewer.threeScene.remove(plane); plane.geometry.dispose(); material.dispose(); texture.dispose() } }
 }
 
-type DynamicTimeline = { frameCount: number; frames: Array<{ index: number; frameId: string; objects: Array<{ id: string; center: number[]; size: number[]; yawDegrees: number }> }> }
+type DynamicTimeline = { frameCount: number; frames: Array<{ index: number; frameId: string; observations?: Array<{ agent: string; camera: string; image: string }>; objects: Array<{ id: string; center: number[]; size: number[]; yawDegrees: number }> }> }
 
 function installDynamicTimeline(viewer: any, root: HTMLElement, timeline: DynamicTimeline) {
   const group = new THREE.Group(); viewer.threeScene.add(group)
@@ -67,7 +67,8 @@ function installDynamicTimeline(viewer: any, root: HTMLElement, timeline: Dynami
     group.traverse((child) => { if (child instanceof THREE.Mesh) { child.geometry.dispose(); (child.material as THREE.Material).dispose() } })
     group.clear()
     const frame = timeline.frames[index]
-    label.textContent = `Timestep ${index + 1} / ${timeline.frameCount} · source ${frame.frameId}`
+    const agents = [...new Set((frame.observations ?? []).map((observation) => observation.agent))]
+    label.textContent = `Timestep ${index + 1} / ${timeline.frameCount} · source ${frame.frameId} · cameras ${agents.join(', ') || 'n/a'}`
     frame.objects.forEach((object) => {
       const color = new THREE.Color().setHSL((Number(object.id) * .137) % 1, .72, .48)
       const car = new THREE.Group()
@@ -507,7 +508,7 @@ function SplatViewer() {
       </div>
     </div>}
     {status === 'ready' && <>
-      <div className="pointer-events-none absolute left-5 top-5 rounded-xl border border-white/10 bg-black/65 px-4 py-3 backdrop-blur md:left-7 md:top-7"><p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/45">Interactive scene</p><p className="mt-1.5 text-sm font-medium">{guidedMode ? 'Drag to look · WASD to move · Space up / Ctrl down · boundary locked' : 'Drag to orbit · scroll to zoom'}</p></div>
+      <div className="pointer-events-none absolute left-5 top-5 rounded-xl border border-white/10 bg-black/65 px-4 py-3 backdrop-blur md:left-7 md:top-7"><p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/45">Interactive scene</p><p className="mt-1.5 text-sm font-medium">{guidedMode ? 'Drag to look · WASD move · Space/Ctrl vertical · Recorded view switches routes' : 'Drag to orbit · scroll to zoom'}</p></div>
       <div className="absolute bottom-5 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-black/75 p-1.5 backdrop-blur">
         <ViewerButton label="Recorded view" onClick={() => guidedRef.current?.nextRecordedView?.()}><Camera className="h-4 w-4" /></ViewerButton><ViewerButton label="Reset" onClick={reset}><RotateCcw className="h-4 w-4" /></ViewerButton><ViewerButton label="Fullscreen" onClick={fullscreen}><Maximize className="h-4 w-4" /></ViewerButton>
       </div>

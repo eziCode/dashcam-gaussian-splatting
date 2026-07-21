@@ -20,7 +20,10 @@ def rotation(q):
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("dataset", type=Path)
 parser.add_argument("output", type=Path)
-parser.add_argument("--radius", type=float, default=0.10)
+parser.add_argument(
+    "--radius", type=float, default=0.22,
+    help="Navigable radius around measured camera trajectories in normalized scene units",
+)
 parser.add_argument("--provenance", type=Path, help="Limit navigation to cameras used by accepted VGGT chunks")
 args = parser.parse_args()
 
