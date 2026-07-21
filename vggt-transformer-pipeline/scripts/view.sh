@@ -9,7 +9,7 @@ PORT="${2:-8080}"
 DATASET="${3:-${REPO_ROOT}/gaussian-splatting-pipeline/runs/cooperscene_demo/colmap}"
 
 [[ -f "${PLY}" ]] || { echo "Transformer surfel PLY not found: ${PLY}" >&2; exit 1; }
-[[ -f "${DATASET}/sparse/0/images.bin" ]] || { echo "Calibrated camera poses not found: ${DATASET}" >&2; exit 2; }
+[[ -f "${DATASET}/sparse/0/images.bin" || -f "${DATASET}/cameras.json" ]] || { echo "Calibrated camera poses not found: ${DATASET}" >&2; exit 2; }
 [[ -x "${ROOT}/.venv/bin/python" ]] || { echo "Run scripts/setup_apple.sh first." >&2; exit 3; }
 command -v npm >/dev/null || { echo "npm is required." >&2; exit 4; }
 [[ -d "${WEB_ROOT}/node_modules" ]] || { echo "Run npm install in splat-web-viewer first." >&2; exit 5; }
@@ -19,7 +19,7 @@ mkdir -p "${RUNTIME}"
 cp "${PLY}" "${RUNTIME}/model.ply"
 PROVENANCE="${PLY%.*}.json"
 CAMERA_COMMAND=("${ROOT}/.venv/bin/python" "${ROOT}/scripts/export_camera_path.py" \
-  "${DATASET}" "${RUNTIME}/camera-path.json")
+  "${DATASET}" "${RUNTIME}/camera-path.json" --scene "${PLY}")
 if [[ -f "${PROVENANCE}" ]]; then
   CAMERA_COMMAND+=(--provenance "${PROVENANCE}")
 fi
@@ -32,6 +32,10 @@ MANIFEST="${RUN_ROOT}/capture/cooperscene_manifest.json"
 if [[ -f "${MANIFEST}" ]]; then
   "${ROOT}/.venv/bin/python" "${ROOT}/scripts/export_timeline.py" \
     "${DATASET}" "${MANIFEST}" "${RUNTIME}/timeline.json"
+  export VITE_TIMELINE_URL="/runtime/timeline.json"
+elif [[ -f "${DATASET}/cameras.json" ]]; then
+  "${ROOT}/.venv/bin/python" "${ROOT}/scripts/export_v2x_boxes.py" \
+    "${DATASET}" "${RUNTIME}/timeline.json"
   export VITE_TIMELINE_URL="/runtime/timeline.json"
 else
   export VITE_TIMELINE_URL=""

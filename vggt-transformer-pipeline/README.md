@@ -73,3 +73,43 @@ frame records its source frame ID, available camera observations, and the
 position, orientation, identity, and dimensions of every tracked vehicle.
 Moving the slider changes only dynamic scene state; it does not pretend that a
 different static background was measured at every instant.
+
+## Tiny camera-only V2X-Real sample
+
+The official camera-inclusive test archive is about 26 GB. This command uses
+HTTP byte ranges to download only eight synchronized timesteps from one real
+intersection scene: the front RGB camera from each of two vehicles and one RGB
+camera from each of two roadside infrastructure units. LiDAR `.bin` members are
+never downloaded, and a 40 MiB safety limit is enforced by default.
+
+```bash
+.venv/bin/python scripts/download_v2x_real_sample.py \
+  data/v2x-real-tiny-mid
+
+./scripts/run_v2x_real_apple.sh
+```
+
+Use `--frames`, `--frame-stride`, `--start-index`, and `--max-download-mb` to
+change the bounded sample. The default starts near the middle of the sequence,
+where the vehicle and roadside views overlap at the intersection. The output
+retains the four agent directories (`1`, `2`, `-1`, `-2`)
+and includes only JPEG images and their synchronized calibration YAML files.
+The reconstruction preset groups both vehicle views and both roadside views at
+each timestep, and records `lidarUsed: false` in the prepared camera manifest.
+It places VGGT-inferred camera-local depth using the supplied RGB camera poses;
+this avoids trusting a transformer-estimated camera layout across distant and
+heterogeneous viewpoints while remaining strictly camera-only.
+The global platform pose is composed with each optical-camera-to-platform
+calibration matrix, and one shared depth scale is used across all temporal
+chunks to prevent duplicated layer surfaces. Static output also requires
+support from multiple chunks.
+The high-quality preset samples every inferred depth pixel and caps each surfel
+footprint below one fusion voxel to avoid blurred streaks. The viewer exports a
+single static set of V2X vehicle annotations when timestep playback is disabled.
+
+View the completed sample with:
+
+```bash
+./scripts/view.sh \
+  runs/v2x-real-mid/scene.ply 8080 runs/v2x-real-mid/prepared
+```

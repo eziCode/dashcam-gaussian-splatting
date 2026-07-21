@@ -10,7 +10,7 @@ import {
 import { StateFarmMark } from '@/components/StateFarmMark'
 
 type ViewerStatus = 'idle' | 'loading' | 'ready' | 'error'
-type CameraPath = { centers: number[][]; forwards: number[][]; ups: number[][]; names: string[]; radius: number }
+type CameraPath = { centers: number[][]; forwards: number[][]; ups: number[][]; names: string[]; radius: number; bounds?: { min: number[]; max: number[] }; navigation?: string }
 
 const runtimeParams = new URLSearchParams(window.location.search)
 const runtimeEnvironment = (import.meta as any).env as Record<string, string | undefined>
@@ -62,7 +62,8 @@ function installDynamicTimeline(viewer: any, root: HTMLElement, timeline: Dynami
   const label = document.createElement('div'); label.className = 'mb-2 text-xs font-semibold'
   const slider = document.createElement('input')
   slider.type = 'range'; slider.min = '0'; slider.max = String(Math.max(0, timeline.frameCount - 1)); slider.value = '0'; slider.className = 'w-full accent-red-600'
-  panel.append(label, slider); root.append(panel)
+  panel.append(label, slider)
+  if (timeline.frameCount > 1) root.append(panel)
   const renderFrame = (index: number) => {
     group.traverse((child) => { if (child instanceof THREE.Mesh) { child.geometry.dispose(); (child.material as THREE.Material).dispose() } })
     group.clear()
@@ -120,6 +121,10 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
   }
   const inside = (x: number, y: number, z: number) => {
     if (mapMode) return Math.abs(x - mapCenter.x) <= mapSize * .48 && Math.abs(y - mapCenter.y) <= mapSize * .48 && z >= mapCenter.z - mapSize && z <= mapCenter.z - .15
+    if (path.bounds) {
+      const low = path.bounds.min, high = path.bounds.max
+      return x >= low[0] && x <= high[0] && y >= low[1] && y <= high[1] && z >= low[2] && z <= high[2]
+    }
     const limit = path.radius * path.radius
     return path.centers.some((center) => {
       const dx = x - center[0], dy = y - center[1], dz = z - center[2]
@@ -508,7 +513,7 @@ function SplatViewer() {
       </div>
     </div>}
     {status === 'ready' && <>
-      <div className="pointer-events-none absolute left-5 top-5 rounded-xl border border-white/10 bg-black/65 px-4 py-3 backdrop-blur md:left-7 md:top-7"><p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/45">Interactive scene</p><p className="mt-1.5 text-sm font-medium">{guidedMode ? 'Drag to look · WASD move · Space/Ctrl vertical · Recorded view switches routes' : 'Drag to orbit · scroll to zoom'}</p></div>
+      <div className="pointer-events-none absolute left-5 top-5 rounded-xl border border-white/10 bg-black/65 px-4 py-3 backdrop-blur md:left-7 md:top-7"><p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/45">Interactive scene</p><p className="mt-1.5 text-sm font-medium">{guidedMode ? 'Free explore · drag to look · WASD move · Space/Ctrl vertical' : 'Drag to orbit · scroll to zoom'}</p></div>
       <div className="absolute bottom-5 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-black/75 p-1.5 backdrop-blur">
         <ViewerButton label="Recorded view" onClick={() => guidedRef.current?.nextRecordedView?.()}><Camera className="h-4 w-4" /></ViewerButton><ViewerButton label="Reset" onClick={reset}><RotateCcw className="h-4 w-4" /></ViewerButton><ViewerButton label="Fullscreen" onClick={fullscreen}><Maximize className="h-4 w-4" /></ViewerButton>
       </div>

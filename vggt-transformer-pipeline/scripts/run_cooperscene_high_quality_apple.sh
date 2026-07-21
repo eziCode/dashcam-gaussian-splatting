@@ -16,4 +16,7 @@ exec "${ROOT}/scripts/run_cooperscene_apple.sh" "${DATASET}" "${OUTPUT}" \
   --voxel-size 0.0015 \
   --max-points 2000000 \
   --max-point-distance 5.0 \
+  --adaptive-anchors 2 \
+  --min-chunk-support 2 \
+  --support-voxel-size 0.01 \
   "${@:3}"

@@ -58,7 +58,18 @@ def quaternion_to_rotation(q: np.ndarray) -> np.ndarray:
 
 
 def load_registered_cameras(dataset: Path) -> list[CameraInfo]:
-    """Read only the names and poses needed from a COLMAP images.bin file."""
+    """Read names and poses from a native manifest or COLMAP images.bin."""
+    manifest_path = dataset / "cameras.json"
+    if manifest_path.is_file():
+        payload = json.loads(manifest_path.read_text())
+        return [
+            CameraInfo(
+                record["image"],
+                np.asarray(record["rotation"], dtype=np.float64),
+                np.asarray(record["translation"], dtype=np.float64),
+            )
+            for record in payload["records"]
+        ]
     import struct
 
     path = dataset / "sparse" / "0" / "images.bin"
@@ -86,6 +97,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--timesteps-per-chunk", type=int, default=4, help="Temporal views from one camera per chunk")
     parser.add_argument("--chunk-overlap", type=int, default=2)
     parser.add_argument("--agents", nargs="*", help="Optional CooperScene agent IDs, e.g. --agents 2 3")
+    parser.add_argument("--chunk-mode", choices=("camera", "timestep"), default="camera",
+                        help="Group temporal views per camera or synchronized views across cameras")
     parser.add_argument("--confidence-percentile", type=float, default=55.0)
     parser.add_argument("--pixel-stride", type=int, default=2)
     parser.add_argument("--voxel-size", type=float, default=0.003)
@@ -93,8 +106,17 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--max-point-distance", type=float, default=6.0,
                         help="Reject inferred points farther than this normalized distance from a source camera")
     parser.add_argument("--max-alignment-rmse", type=float, default=0.35)
+    parser.add_argument("--alignment-mode", choices=("similarity", "calibrated-cameras"), default="similarity",
+                        help="Align VGGT cameras jointly, or place inferred camera-local depth at supplied poses")
+    parser.add_argument("--calibrated-depth-scale", type=float,
+                        help="Use one fixed VGGT-to-scene depth scale for every calibrated-camera chunk")
     parser.add_argument("--min-camera-span", type=float, default=0.015,
                         help="Reject chunks without enough real camera translation to determine scale")
+    parser.add_argument("--adaptive-anchors", type=int, default=0,
+                        help="Add up to N distant same-camera frames when a local chunk lacks baseline")
+    parser.add_argument("--min-chunk-support", type=int, default=1,
+                        help="Require this many independent chunks to support each coarse region")
+    parser.add_argument("--support-voxel-size", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -112,6 +134,43 @@ def camera_centers(infos) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray],
 
 def predicted_centers(extrinsics: np.ndarray) -> np.ndarray:
     return np.stack([-matrix[:3, :3].T @ matrix[:3, 3] for matrix in extrinsics])
+
+
+def calibrated_camera_transform(points: np.ndarray, extrinsics: np.ndarray,
+                                target_centers: np.ndarray, target_rotations: np.ndarray,
+                                fixed_scale: float | None = None):
+    """Place VGGT camera-local depth at known RGB camera poses.
+
+    VGGT supplies depth but its camera graph can be unreliable for distant,
+    heterogeneous roadside/dashcam views.  V2X-Real already supplies calibrated
+    camera poses, so only a robust global depth scale is estimated from camera
+    baselines; no LiDAR geometry is involved.
+    """
+    source_centers = predicted_centers(extrinsics)
+    source_distances, target_distances = [], []
+    for first in range(len(source_centers)):
+        for second in range(first + 1, len(source_centers)):
+            source = float(np.linalg.norm(source_centers[first] - source_centers[second]))
+            target = float(np.linalg.norm(target_centers[first] - target_centers[second]))
+            if source > 1e-5 and target > 1e-5:
+                source_distances.append(source)
+                target_distances.append(target)
+    if not source_distances:
+        raise ValueError("VGGT did not predict a usable camera baseline")
+    ratios = np.asarray(target_distances) / np.asarray(source_distances)
+    measured_scale = float(np.median(ratios))
+    scale = fixed_scale if fixed_scale is not None else measured_scale
+    relative_error = float(np.median(np.abs(np.asarray(source_distances) * scale - target_distances)
+                                     / np.maximum(target_distances, 1e-6)))
+    transformed = np.empty_like(points)
+    for frame in range(len(points)):
+        predicted_rotation = extrinsics[frame, :3, :3]
+        predicted_translation = extrinsics[frame, :3, 3]
+        camera_local = points[frame] @ predicted_rotation.T + predicted_translation
+        # target_rotations are world-to-camera. For row vectors, camera to
+        # world is multiplication by that matrix without a transpose.
+        transformed[frame] = scale * (camera_local @ target_rotations[frame]) + target_centers[frame]
+    return transformed, scale, relative_error, measured_scale
 
 
 def similarity(source: np.ndarray, target: np.ndarray, rotation_hint: np.ndarray | None = None):
@@ -160,7 +219,22 @@ def preprocess_mask(path: Path, size: int = 518) -> np.ndarray:
 
 
 def make_chunks(names: list[str], frame_stride: int, size: int, overlap: int,
-                selected_agents: set[str] | None = None) -> list[list[str]]:
+                selected_agents: set[str] | None = None, mode: str = "camera") -> list[list[str]]:
+    if mode == "timestep":
+        by_timestep: dict[int, list[str]] = {}
+        for name in names:
+            timestep, agent = TIMESTEP.match(Path(name).name), AGENT.search(Path(name).name)
+            if timestep and agent and (selected_agents is None or agent.group(1) in selected_agents):
+                by_timestep.setdefault(int(timestep.group(1)), []).append(name)
+        selected = sorted(by_timestep)[::frame_stride]
+        step = max(1, size - overlap)
+        chunks = []
+        for index in range(0, len(selected), step):
+            window = selected[index:index + size]
+            chunk = [name for timestep in window for name in sorted(by_timestep[timestep])]
+            if len(chunk) >= 2:
+                chunks.append(chunk)
+        return chunks
     grouped: dict[str, list[tuple[int, str]]] = {}
     for name in names:
         timestep, agent = TIMESTEP.match(Path(name).name), AGENT.search(Path(name).name)
@@ -179,6 +253,36 @@ def make_chunks(names: list[str], frame_stride: int, size: int, overlap: int,
             if len(chunk) >= 2:
                 chunks.append(chunk)
     return chunks
+
+
+def add_baseline_anchors(chunks: list[list[str]], all_names: list[str], centers: dict[str, np.ndarray],
+                         minimum_span: float, maximum_anchors: int) -> list[list[str]]:
+    """Add distant frames from the same camera when local motion cannot establish scale."""
+    if maximum_anchors <= 0:
+        return chunks
+    by_agent: dict[str, list[str]] = {}
+    for name in all_names:
+        match = AGENT.search(name)
+        if match:
+            by_agent.setdefault(match.group(1), []).append(name)
+    result = []
+    for original in chunks:
+        chunk = list(original)
+        match = AGENT.search(chunk[0])
+        candidates = by_agent.get(match.group(1), []) if match else []
+        for _ in range(maximum_anchors):
+            points = np.asarray([centers[name] for name in chunk])
+            span = float(np.max(np.linalg.norm(points - points.mean(0), axis=1)))
+            if span >= minimum_span:
+                break
+            available = [name for name in candidates if name not in chunk]
+            if not available:
+                break
+            center = points.mean(0)
+            anchor = max(available, key=lambda name: np.linalg.norm(centers[name] - center))
+            chunk.append(anchor)
+        result.append(sorted(chunk))
+    return result
 
 
 def inference(model, images: torch.Tensor, device: torch.device):
@@ -236,10 +340,13 @@ def surface_attributes(points: np.ndarray, voxel: float):
     tangent_y = np.cross(normal, tangent_x)
     tangent_y /= np.maximum(np.linalg.norm(tangent_y, axis=-1, keepdims=True), 1e-8)
     length_y = np.abs(np.sum(tangent_y_raw * tangent_y, axis=-1))
-    minimum, maximum = voxel * 0.18, voxel * 3.0
-    scale_x = np.clip(length_x * 0.72, minimum, maximum)
-    scale_y = np.clip(length_y * 0.72, minimum, maximum)
-    thickness = np.clip(np.minimum(scale_x, scale_y) * 0.08, voxel * 0.025, voxel * 0.18)
+    # Large depth discontinuities used to create metre-wide surfels that
+    # looked like blur streaks. Keep footprints below one fusion voxel; denser
+    # sampling supplies coverage instead of oversized translucent ellipses.
+    minimum, maximum = voxel * 0.10, voxel * 0.70
+    scale_x = np.clip(length_x * 0.42, minimum, maximum)
+    scale_y = np.clip(length_y * 0.42, minimum, maximum)
+    thickness = np.clip(np.minimum(scale_x, scale_y) * 0.06, voxel * 0.015, voxel * 0.08)
     scales = np.stack([scale_x, scale_y, thickness], axis=-1).astype(np.float32)
     matrices = np.stack([tangent_x, tangent_y, normal], axis=-1).reshape(-1, 3, 3)
     quaternions = rotation_matrices_to_quaternions(matrices).reshape(points.shape[:-1] + (4,))
@@ -256,6 +363,18 @@ def voxel_fuse(points: np.ndarray, colors: np.ndarray, confidence: np.ndarray,
     first[1:] = np.any(sorted_keys[1:] != sorted_keys[:-1], axis=1)
     selected = order[first]
     return points[selected], colors[selected], confidence[selected], scales[selected], quaternions[selected]
+
+
+def consensus_mask(points: np.ndarray, sources: np.ndarray, voxel: float, minimum_support: int) -> np.ndarray:
+    """Keep regions independently supported by multiple reconstruction chunks."""
+    if minimum_support <= 1:
+        return np.ones(len(points), dtype=bool)
+    keys = np.floor(points / voxel).astype(np.int64)
+    _, voxel_index = np.unique(keys, axis=0, return_inverse=True)
+    source_count = int(sources.max()) + 1
+    unique_pairs = np.unique(voxel_index.astype(np.int64) * source_count + sources)
+    support = np.bincount(unique_pairs // source_count, minlength=int(voxel_index.max()) + 1)
+    return support[voxel_index] >= minimum_support
 
 
 def save_surfel_ply(path: Path, points: np.ndarray, colors: np.ndarray,
@@ -322,12 +441,16 @@ def main() -> None:
     chunks = make_chunks(
         names, args.frame_stride, args.timesteps_per_chunk, args.chunk_overlap,
         set(args.agents) if args.agents else None,
+        args.chunk_mode,
+    )
+    chunks = add_baseline_anchors(
+        chunks, names, known_centers, args.min_camera_span, args.adaptive_anchors
     )
     if not chunks:
         raise SystemExit("No image chunks were selected")
     print(f"Selected {len(chunks)} chunks from {len(names)} registered images")
 
-    all_points, all_colors, all_confidence, all_scales, all_quaternions, reports = [], [], [], [], [], []
+    all_points, all_colors, all_confidence, all_scales, all_quaternions, all_sources, reports = [], [], [], [], [], [], []
     per_chunk_limit = max(20_000, math.ceil(args.max_points * 1.5 / len(chunks)))
     for chunk_index, chunk_names in enumerate(chunks, 1):
         paths = [args.dataset / "images" / name for name in chunk_names]
@@ -345,24 +468,42 @@ def main() -> None:
             if device.type == "mps":
                 torch.mps.empty_cache()
             continue
-        orientation_sum = np.zeros((3, 3))
-        for frame, name in enumerate(chunk_names):
-            predicted_world_to_camera = extrinsic[frame, :3, :3]
-            orientation_sum += known_rotations[name].T @ predicted_world_to_camera
-        align_scale, rotation, translation, rmse = similarity(
-            source_centers, target_centers, rotation_hint=orientation_sum
-        )
-        points = align_scale * (points @ rotation.T) + translation
+        if args.alignment_mode == "calibrated-cameras":
+            try:
+                points, align_scale, rmse, measured_scale = calibrated_camera_transform(
+                    points, extrinsic, target_centers,
+                    np.asarray([known_rotations[name] for name in chunk_names]),
+                    args.calibrated_depth_scale,
+                )
+            except ValueError as error:
+                reports.append({"images": chunk_names, "points": 0, "rejected": str(error)})
+                print(f"  rejected chunk: {error}")
+                del images, depth, confidence, points
+                if device.type == "mps":
+                    torch.mps.empty_cache()
+                continue
+        else:
+            orientation_sum = np.zeros((3, 3))
+            for frame, name in enumerate(chunk_names):
+                predicted_world_to_camera = extrinsic[frame, :3, :3]
+                orientation_sum += known_rotations[name].T @ predicted_world_to_camera
+            align_scale, rotation, translation, rmse = similarity(
+                source_centers, target_centers, rotation_hint=orientation_sum
+            )
+            points = align_scale * (points @ rotation.T) + translation
         surfel_scales, surfel_quaternions = surface_attributes(points, args.voxel_size)
         colors = images.float().cpu().numpy().transpose(0, 2, 3, 1)
 
-        if not np.isfinite(rmse) or rmse > args.max_alignment_rmse:
+        if args.alignment_mode == "similarity" and (not np.isfinite(rmse) or rmse > args.max_alignment_rmse):
             reports.append({"images": chunk_names, "alignmentRmse": rmse, "points": 0, "rejected": "alignment"})
             print(f"  rejected chunk: alignment RMSE {rmse:.3f} > {args.max_alignment_rmse:.3f}")
             del images, depth, confidence, points
             if device.type == "mps":
                 torch.mps.empty_cache()
             continue
+        if args.alignment_mode == "calibrated-cameras":
+            print(f"  calibrated RGB poses; depth scale {align_scale:.4f} "
+                  f"(measured {measured_scale:.4f}), median baseline error {rmse:.3f}")
 
         valid = np.isfinite(points).all(-1) & np.isfinite(confidence) & (depth[..., 0] > 0)
         for frame, name in enumerate(chunk_names):
@@ -410,6 +551,7 @@ def main() -> None:
         all_confidence.append(selected_confidence.astype(np.float32))
         all_scales.append(selected_scales.astype(np.float32))
         all_quaternions.append(selected_quaternions.astype(np.float32))
+        all_sources.append(np.full(len(selected_points), chunk_index - 1, dtype=np.int32))
         reports.append({"images": chunk_names, "cameraSpan": target_span, "alignmentRmse": rmse, "points": len(selected_points)})
         del images, depth, confidence, points
         if device.type == "mps":
@@ -419,6 +561,12 @@ def main() -> None:
         raise SystemExit("Every VGGT chunk failed calibrated alignment; try a smaller frame stride or a different agent")
     points = np.concatenate(all_points); colors = np.concatenate(all_colors); confidence = np.concatenate(all_confidence)
     scales = np.concatenate(all_scales); quaternions = np.concatenate(all_quaternions)
+    sources = np.concatenate(all_sources)
+    consensus = consensus_mask(points, sources, args.support_voxel_size, args.min_chunk_support)
+    consensus_removed = int((~consensus).sum())
+    points, colors, confidence = points[consensus], colors[consensus], confidence[consensus]
+    scales, quaternions = scales[consensus], quaternions[consensus]
+    print(f"Consensus filter removed {consensus_removed:,} candidates unsupported by {args.min_chunk_support} chunks")
     points, colors, confidence, scales, quaternions = voxel_fuse(
         points, colors, confidence, scales, quaternions, args.voxel_size
     )
@@ -430,14 +578,18 @@ def main() -> None:
         points, colors, confidence = points[choice], colors[choice], confidence[choice]
         scales, quaternions = scales[choice], quaternions[choice]
     save_surfel_ply(args.output, points, colors, scales, quaternions)
+    camera_manifest = args.dataset / "cameras.json"
+    camera_manifest_data = json.loads(camera_manifest.read_text()) if camera_manifest.is_file() else {}
     provenance = {
         "method": "VGGT feed-forward depth and camera transformer; no Gaussian optimization",
         "model": args.model,
         "sourceDataset": str(args.dataset.resolve()),
+        "lidarUsed": camera_manifest_data.get("lidarUsed", False),
         "pointCount": len(points),
         "normalization": {"centroid": centroid.tolist(), "scale": normalization},
         "parameters": vars(args) | {"dataset": str(args.dataset), "output": str(args.output)},
         "chunks": reports,
+        "consensusRemoved": consensus_removed,
         "warning": "Model-inferred geometry is interpretive and must not be treated as measured accident evidence.",
     }
     args.output.with_suffix(".json").write_text(json.dumps(provenance, indent=2) + "\n")
