@@ -12,3 +12,4 @@ gaussian-splatting-pipeline/data/cooperscene*.zip
 vggt-transformer-pipeline/third_party/vggt/
 splat-web-viewer/node_modules/
 splat-cloud-generator/.venv/
+vggt-transformer-pipeline/data
