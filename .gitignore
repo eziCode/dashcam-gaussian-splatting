@@ -1,5 +1,7 @@
 .DS_Store
 .venv-apple/
+vggt-transformer-pipeline/.venv/
+vggt-transformer-pipeline/runs/
 .viewcrafter-input/
 runs/
 *.log
@@ -7,5 +9,6 @@ __pycache__/
 *.py[cod]
 gaussian-splatting-pipeline/data/cooperscene*/
 gaussian-splatting-pipeline/data/cooperscene*.zip
+vggt-transformer-pipeline/third_party/vggt/
 splat-web-viewer/node_modules/
 splat-cloud-generator/.venv/

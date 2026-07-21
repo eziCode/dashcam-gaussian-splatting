@@ -172,6 +172,14 @@ Map alignment can be tuned live with URL parameters such as
 `?geoHeading=90&geoX=0.1&geoY=-0.05&geoZ=0.12&geoScale=1.0&geoOpacity=.92`.
 Once aligned, copy those values into `geo-context.json` for the claim record.
 
+## Separate transformer pipeline
+
+The VGGT feed-forward reconstruction implementation is intentionally isolated
+in [`vggt-transformer-pipeline`](vggt-transformer-pipeline/README.md). It has
+its own environment, pinned upstream model source, inference scripts, run
+directory, provenance format, and viewer launcher. It can consume an existing
+calibrated image directory, but does not import this Gaussian pipeline.
+
 ## What the pipeline does
 
 1. Extracts and sequentially matches SIFT features using COLMAP on CPU.
