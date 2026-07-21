@@ -115,9 +115,28 @@ available.
 
 The CooperScene path also projects its metric vehicle boxes into per-frame RGB
 validity masks. The Apple trainer excludes those pixels from the static-scene
-loss, adaptively splits high-gradient Gaussians every 400 iterations, and keeps
-the tracked vehicles in `timeline.json` for independent timestep playback.
-This prevents moving traffic from being baked into the background splat.
+loss and keeps the tracked vehicles in `timeline.json` for independent
+timestep playback. Its stable topology schedule replaces high-gradient parent
+Gaussians with smaller children, prunes transparent/pathological points,
+regularizes scale and anisotropy, resets runaway opacity, stops densifying
+before the final refinement stage, and balances samples across camera agents.
+This prevents moving traffic from being baked into the background splat and
+avoids turning sparse reconstruction errors into large colored clouds.
+
+For a clean CooperScene retrain, 3,000 iterations uses the conservative Apple
+defaults (8% splitting, a 250k point ceiling, and densification ending at
+iteration 1,800):
+
+```bash
+./scripts/train_apple.sh \
+  runs/cooperscene_demo/colmap \
+  3000 \
+  runs/cooperscene_demo/training_stable
+```
+
+Extra trainer flags can be passed after the output directory. For example,
+`--max-scale 0.018 --max-gaussians 200000` produces a still more conservative
+model when colored fog is more objectionable than small holes.
 
 The custom viewer starts at a recorded camera pose and constrains movement to
 a narrow `0.10`-radius corridor around measured camera positions. It caps the
@@ -133,6 +152,26 @@ python3 scripts/prepare_cooperscene_rgb.py \
   data/cooperscene-mini /tmp/cooperscene-rgb --max-timesteps 10
 ```
 
+## Satellite context for accident locations
+
+Satellite imagery is rendered as a separate, replaceable ground plane rather
+than being baked into evidentiary splats. For U.S. coordinates the helper uses
+the public USGS NAIP orthophoto service; a licensed local image can be supplied
+for other providers or countries.
+
+```bash
+python3 scripts/prepare_satellite_context.py \
+  runs/CLAIM/colmap runs/CLAIM/geo \
+  --latitude 33.975738 --longitude -117.339850 \
+  --radius-meters 120 --heading-degrees 0
+```
+
+`view_apple.sh` detects `runs/CLAIM/geo` automatically, displays the required
+attribution, and labels it contextual rather than contemporaneous evidence.
+Map alignment can be tuned live with URL parameters such as
+`?geoHeading=90&geoX=0.1&geoY=-0.05&geoZ=0.12&geoScale=1.0&geoOpacity=.92`.
+Once aligned, copy those values into `geo-context.json` for the claim record.
+
 ## What the pipeline does
 
 1. Extracts and sequentially matches SIFT features using COLMAP on CPU.
@@ -144,10 +183,11 @@ python3 scripts/prepare_cooperscene_rgb.py \
 
 ## Scope
 
-`splat-apple` is a young community implementation. Its current trainer does not
-include the adaptive Gaussian densification and pruning used by mature CUDA
-trainers such as gsplat/Splatfacto. It is appropriate for proving the fully
-local Apple workflow, but a CUDA trainer remains the quality baseline.
+`splat-apple` is a young community implementation. This repository adds a
+conservative adaptive topology schedule, but it still lacks several advanced
+features of mature trainers. It is appropriate for a fully local Apple
+workflow; reconstruction quality remains bounded by real multiview overlap and
+the accuracy of the RGB-only geometry.
 
 The four files in `images_sparse` do not have enough verified overlap for
 classical pose recovery. Use `images_dense` for this experiment.

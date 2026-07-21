@@ -17,6 +17,40 @@ const runtimeEnvironment = (import.meta as any).env as Record<string, string | u
 const runtimeScene = runtimeParams.get('scene') ?? runtimeEnvironment.VITE_SCENE_URL ?? '/demo/merged-rooms.ply'
 const guidedMode = runtimeEnvironment.VITE_GUIDED_MODE === '1' || runtimeParams.get('guided') === '1'
 const timelineUrl = runtimeEnvironment.VITE_TIMELINE_URL
+const geoContextUrl = runtimeEnvironment.VITE_GEO_CONTEXT_URL
+
+type GeoContext = { image: string; sizeSceneUnits: number; center: number[]; headingDegrees: number; attribution: string; classification: string }
+
+async function installGeoContext(viewer: any, root: HTMLElement, context: GeoContext) {
+  const texture = await new THREE.TextureLoader().loadAsync(context.image)
+  texture.colorSpace = THREE.SRGBColorSpace
+  const opacity = Number(runtimeParams.get('geoOpacity') ?? .92)
+  const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, depthWrite: true, transparent: opacity < 1, opacity })
+  const scale = Number(runtimeParams.get('geoScale') ?? 1)
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(context.sizeSceneUnits * scale, context.sizeSceneUnits * scale), material)
+  plane.position.set(
+    Number(runtimeParams.get('geoX') ?? context.center[0]),
+    Number(runtimeParams.get('geoY') ?? context.center[1]),
+    Number(runtimeParams.get('geoZ') ?? context.center[2]),
+  )
+  plane.rotation.z = -Number(runtimeParams.get('geoHeading') ?? context.headingDegrees) * Math.PI / 180
+  plane.renderOrder = -10; viewer.threeScene.add(plane)
+  const attribution = document.createElement('div'); attribution.dataset.viewerUi = 'true'
+  attribution.className = 'pointer-events-none absolute bottom-3 right-3 z-10 max-w-[420px] rounded bg-black/65 px-2 py-1 text-[9px] text-white/70'
+  attribution.textContent = `${context.attribution} · ${context.classification}`; root.append(attribution)
+  const evidence = document.createElement('button'); evidence.dataset.viewerUi = 'true'
+  evidence.className = 'absolute right-5 top-5 z-20 rounded-full border border-white/15 bg-black/75 px-4 py-2 text-xs font-semibold text-white backdrop-blur'
+  let splatVisible = false
+  const updateEvidence = () => {
+    const scene = viewer.splatMesh?.getScene?.(0)
+    if (scene) scene.visible = splatVisible
+    evidence.textContent = splatVisible ? 'Hide blurry evidence splat' : 'Show evidence splat'
+    viewer.forceRenderNextFrame?.()
+  }
+  evidence.onclick = () => { splatVisible = !splatVisible; updateEvidence() }
+  root.append(evidence); updateEvidence()
+  return { context, dispose: () => { evidence.remove(); attribution.remove(); viewer.threeScene.remove(plane); plane.geometry.dispose(); material.dispose(); texture.dispose() } }
+}
 
 type DynamicTimeline = { frameCount: number; frames: Array<{ index: number; frameId: string; objects: Array<{ id: string; center: number[]; size: number[]; yawDegrees: number }> }> }
 
@@ -30,16 +64,19 @@ function installDynamicTimeline(viewer: any, root: HTMLElement, timeline: Dynami
   slider.type = 'range'; slider.min = '0'; slider.max = String(Math.max(0, timeline.frameCount - 1)); slider.value = '0'; slider.className = 'w-full accent-red-600'
   panel.append(label, slider); root.append(panel)
   const renderFrame = (index: number) => {
-    while (group.children.length) {
-      const child = group.children.pop() as THREE.Mesh
-      child.geometry?.dispose(); (child.material as THREE.Material)?.dispose()
-    }
+    group.traverse((child) => { if (child instanceof THREE.Mesh) { child.geometry.dispose(); (child.material as THREE.Material).dispose() } })
+    group.clear()
     const frame = timeline.frames[index]
     label.textContent = `Timestep ${index + 1} / ${timeline.frameCount} · source ${frame.frameId}`
     frame.objects.forEach((object) => {
-      const material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL((Number(object.id) * .137) % 1, .8, .55), transparent: true, opacity: .7, wireframe: true })
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(object.size[0], object.size[1], object.size[2]), material)
-      mesh.position.set(object.center[0], object.center[1], object.center[2]); mesh.rotation.z = -object.yawDegrees * Math.PI / 180; group.add(mesh)
+      const color = new THREE.Color().setHSL((Number(object.id) * .137) % 1, .72, .48)
+      const car = new THREE.Group()
+      const body = new THREE.Mesh(new THREE.BoxGeometry(object.size[0], object.size[1], object.size[2] * .55), new THREE.MeshBasicMaterial({ color }))
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(object.size[0] * .48, object.size[1] * .78, object.size[2] * .38), new THREE.MeshBasicMaterial({ color: color.clone().offsetHSL(0, -.15, .15) }))
+      roof.position.z = -object.size[2] * .38
+      const outline = new THREE.LineSegments(new THREE.EdgesGeometry(body.geometry), new THREE.LineBasicMaterial({ color: 0x111111, transparent: true, opacity: .65 }))
+      car.add(body, roof, outline)
+      car.position.set(object.center[0], object.center[1], object.center[2]); car.rotation.z = -object.yawDegrees * Math.PI / 180; group.add(car)
     })
     viewer.forceRenderNextFrame?.()
   }
@@ -61,6 +98,9 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
   let frame = 0
   let lastTime = performance.now()
   const keys = new Set<string>()
+  let mapMode = false
+  let mapCenter = new THREE.Vector3()
+  let mapSize = 0
 
   const direction = () => {
     const forward = baseForward.clone().applyAxisAngle(sceneUp, yaw).normalize()
@@ -78,6 +118,7 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
     viewer.forceRenderNextFrame?.()
   }
   const inside = (x: number, y: number, z: number) => {
+    if (mapMode) return Math.abs(x - mapCenter.x) <= mapSize * .48 && Math.abs(y - mapCenter.y) <= mapSize * .48 && z >= mapCenter.z - mapSize && z <= mapCenter.z - .15
     const limit = path.radius * path.radius
     return path.centers.some((center) => {
       const dx = x - center[0], dy = y - center[1], dz = z - center[2]
@@ -89,6 +130,10 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
     if (inside(x, y, z)) camera.position.set(x, y, z)
   }
   const reset = () => {
+    if (mapMode) {
+      camera.position.set(mapCenter.x, mapCenter.y, mapCenter.z - Math.min(2.4, mapSize * .42))
+      baseForward = new THREE.Vector3(0, 0, 1); sceneUp = new THREE.Vector3(0, 1, 0); yaw = 0; pitch = 0; renderCamera(); return
+    }
     const position = path.centers[startIndex] ?? start
     const forward = path.forwards[startIndex] ?? path.forwards[0]
     const up = path.ups[startIndex] ?? path.ups[0]
@@ -98,7 +143,12 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
     yaw = 0; pitch = 0
     renderCamera()
   }
-  const nextRecordedView = () => { startIndex = (startIndex + 1) % path.centers.length; reset() }
+  const nextRecordedView = () => { mapMode = false; startIndex = (startIndex + 1) % path.centers.length; reset() }
+  const setMapView = (center: number[], size: number) => {
+    mapMode = true; mapCenter = new THREE.Vector3(...center); mapSize = size
+    camera.position.set(mapCenter.x, mapCenter.y, mapCenter.z - Math.min(2.4, size * .42))
+    baseForward = new THREE.Vector3(0, 0, 1); sceneUp = new THREE.Vector3(0, 1, 0); yaw = 0; pitch = 0; renderCamera()
+  }
   const animate = (now: number) => {
     const dt = Math.min((now - lastTime) / 1000, 0.05)
     lastTime = now
@@ -110,8 +160,8 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
     if (keys.has('KeyS') || keys.has('ArrowDown')) movement.sub(forward)
     if (keys.has('KeyD') || keys.has('ArrowRight')) movement.add(right)
     if (keys.has('KeyA') || keys.has('ArrowLeft')) movement.sub(right)
-    if (keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyE')) movement.add(sceneUp)
-    if (keys.has('Space') || keys.has('KeyQ')) movement.sub(sceneUp)
+    if (keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyE')) movement.y += 1
+    if (keys.has('Space') || keys.has('KeyQ')) movement.y -= 1
     if (movement.lengthSq()) { movement.normalize().multiplyScalar(dt * .7); tryMove(movement.x, movement.y, movement.z) }
     renderCamera()
     frame = requestAnimationFrame(animate)
@@ -151,7 +201,7 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
   root.addEventListener('pointercancel', pointerUp, true)
   root.addEventListener('wheel', wheel, { passive: false, capture: true })
   reset(); frame = requestAnimationFrame(animate)
-  return { reset, nextRecordedView, dispose: () => {
+  return { reset, nextRecordedView, setMapView, dispose: () => {
     cancelAnimationFrame(frame)
     window.removeEventListener('keydown', keyDown, true); window.removeEventListener('keyup', keyUp, true)
     window.removeEventListener('blur', clearKeys)
@@ -366,6 +416,7 @@ function SplatViewer() {
   const viewerRef = useRef<any>(null)
   const guidedRef = useRef<ReturnType<typeof installGuidedControls> | null>(null)
   const timelineRef = useRef<ReturnType<typeof installDynamicTimeline> | null>(null)
+  const geoRef = useRef<Awaited<ReturnType<typeof installGeoContext>> | null>(null)
   const sectionRef = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState<ViewerStatus>('idle')
   const [progress, setProgress] = useState(0)
@@ -376,6 +427,7 @@ function SplatViewer() {
     viewerRef.current = null
     guidedRef.current?.dispose(); guidedRef.current = null
     timelineRef.current?.dispose(); timelineRef.current = null
+    geoRef.current?.dispose(); geoRef.current = null
     const renderer = viewer.renderer
     viewer.usingExternalRenderer = true
     try { await viewer.dispose() } finally { renderer?.dispose?.(); renderer?.domElement?.remove?.() }
@@ -392,6 +444,7 @@ function SplatViewer() {
         initialCameraLookAt: [0, 0, 0],
         selfDrivenMode: true,
         dynamicScene: true,
+        enableOptionalEffects: true,
         useBuiltInControls: !guidedMode,
         sphericalHarmonicsDegree: 0,
         sharedMemoryForWorkers: false,
@@ -414,6 +467,13 @@ function SplatViewer() {
         const response = await fetch('/runtime/camera-path.json')
         if (!response.ok) throw new Error('Could not load guided camera path')
         guidedRef.current = installGuidedControls(viewer, rootRef.current, await response.json())
+        if (geoContextUrl) {
+          const geoResponse = await fetch(geoContextUrl)
+          if (geoResponse.ok) {
+            geoRef.current = await installGeoContext(viewer, rootRef.current, await geoResponse.json())
+            guidedRef.current.setMapView(geoRef.current.context.center, geoRef.current.context.sizeSceneUnits)
+          }
+        }
         if (timelineUrl) {
           const timelineResponse = await fetch(timelineUrl)
           if (timelineResponse.ok) timelineRef.current = installDynamicTimeline(viewer, rootRef.current, await timelineResponse.json())

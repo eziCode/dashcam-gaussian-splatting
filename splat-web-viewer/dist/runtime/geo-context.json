@@ -1,0 +1,17 @@
+{
+  "format": "geo-context-v1",
+  "image": "/runtime/satellite.jpg",
+  "latitude": 33.9757375,
+  "longitude": -117.33985,
+  "radiusMeters": 120.0,
+  "metersPerSceneUnit": 47.83544483017007,
+  "sizeSceneUnits": 5.017200129570671,
+  "center": [
+    0.0,
+    0.0,
+    0.12
+  ],
+  "headingDegrees": 0.0,
+  "attribution": "USGS The National Map / USDA NAIP",
+  "classification": "Contextual background; not contemporaneous accident evidence"
+}

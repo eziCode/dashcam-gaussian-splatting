@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Mask-aware MLX Gaussian training with gradient-driven densification."""
+"""Stable, mask-aware Gaussian training for Apple Silicon.
+
+This trainer deliberately favors supported, compact Gaussians over raw point
+count.  Topology updates split (and replace) useful parents, prune transparent
+or pathological points, and keep scales bounded throughout optimization.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ from torch_gs.io.colmap import load_colmap_data_raw
 
 def load_dataset(path: Path, image_folder: str):
     xyz, rgb, infos = load_colmap_data_raw(str(path), image_folder)
-    cameras, targets, masks = [], [], []
+    cameras, targets, masks, names = [], [], [], []
     mask_root = path / "masks"
     for info in infos:
         fx = info.width / (2 * math.tan(info.FovX / 2))
@@ -42,7 +47,8 @@ def load_dataset(path: Path, image_folder: str):
         else:
             valid = np.ones((info.height, info.width), dtype=np.float32)
         masks.append(mx.array(valid[..., None], dtype=mx.float32))
-    return xyz, rgb, cameras, targets, masks
+        names.append(info.image_name)
+    return xyz, rgb, cameras, targets, masks, names
 
 
 def make_optimizers():
@@ -55,13 +61,19 @@ def make_optimizers():
     }
 
 
-def train_step(params, optimizers, target, valid, camera, rasterizer):
+def train_step(params, optimizers, target, valid, camera, rasterizer, max_scale, scale_weight):
     def loss_fn(values):
         image = render(values, camera, rasterizer_type=rasterizer)
         # Dynamic pixels contribute neither RGB nor SSIM gradients. Compositing
         # the detached render into them avoids teaching the static splat cars.
         composite = target * valid + mx.stop_gradient(image) * (1.0 - valid)
-        loss = 0.8 * l1_loss(image, composite) + 0.2 * d_ssim_loss(image, composite)
+        photometric = 0.8 * l1_loss(image, composite) + 0.2 * d_ssim_loss(image, composite)
+        radii = mx.exp(values["scales"])
+        oversize = mx.maximum(radii - max_scale, 0.0) / max_scale
+        # Penalize both huge splats and extreme needles, the two most visible
+        # causes of colored fog in sparse outdoor reconstructions.
+        anisotropy = mx.maximum(mx.max(values["scales"], axis=1) - mx.min(values["scales"], axis=1) - math.log(8.0), 0.0)
+        loss = photometric + scale_weight * (mx.mean(mx.square(oversize)) + 0.1 * mx.mean(mx.square(anisotropy)))
         return loss, image
 
     (loss, image), grads = mx.value_and_grad(loss_fn)(params)
@@ -73,29 +85,101 @@ def train_step(params, optimizers, target, valid, camera, rasterizer):
     return loss, image, psnr, point_gradient
 
 
-def densify(params, gradients, fraction: float, maximum: int):
-    count = params["means"].shape[0]
-    add = min(maximum - count, max(1, int(count * fraction)))
-    if add <= 0:
-        return params, 0
-    scores = np.asarray(gradients)
-    selected = np.argpartition(scores, -add)[-add:]
+def constrain(params, min_scale: float, max_scale: float):
+    """Project unstable parameters back into a renderer-safe range."""
+    params["scales"] = mx.clip(params["scales"], math.log(min_scale), math.log(max_scale))
+    params["opacities"] = mx.clip(params["opacities"], -8.0, 6.0)
+    norm = mx.sqrt(mx.sum(mx.square(params["quaternions"]), axis=1, keepdims=True) + 1e-12)
+    params["quaternions"] = params["quaternions"] / norm
+    return params
+
+
+def update_topology(params, gradients, fraction: float, maximum: int, min_scale: float,
+                    max_scale: float, opacity_threshold: float, allow_pruning: bool):
+    """Prune unsupported splats, then replace high-gradient parents by children."""
     arrays = {key: np.asarray(value) for key, value in params.items()}
-    direction = np.zeros_like(arrays["means"][selected])
-    # Deterministic low-amplitude splitting avoids creating a second blurry
-    # copy far away from its measured surface.
+    count_before = len(arrays["means"])
+    radii = np.exp(arrays["scales"])
+    opacity = 1.0 / (1.0 + np.exp(-arrays["opacities"][:, 0]))
+    finite = np.isfinite(arrays["means"]).all(1) & np.isfinite(radii).all(1)
+    sane = radii.max(1) <= max_scale * 1.01
+    keep = finite & sane
+    if allow_pruning:
+        keep &= opacity >= opacity_threshold
+    pruned = int(count_before - keep.sum())
+    arrays = {key: value[keep] for key, value in arrays.items()}
+    scores = np.asarray(gradients)[keep]
+
+    count = len(arrays["means"])
+    capacity = max(0, maximum - count)
+    split_count = min(capacity, max(1, int(count * fraction))) if count else 0
+    # Only split splats large enough to benefit; cloning tiny splats merely
+    # increases memory without increasing spatial resolution.
+    eligible = np.flatnonzero(np.exp(arrays["scales"]).max(1) > min_scale * 2.0)
+    split_count = min(split_count, len(eligible))
+    if split_count == 0:
+        result = {key: mx.array(value, dtype=mx.float32) for key, value in arrays.items()}
+        return result, 0, pruned
+    selected = eligible[np.argpartition(scores[eligible], -split_count)[-split_count:]]
+    retained = np.ones(count, dtype=bool); retained[selected] = False
     axis = np.argmax(arrays["scales"][selected], axis=1)
-    direction[np.arange(add), axis] = 1.0
-    radius = np.clip(np.exp(np.max(arrays["scales"][selected], axis=1)), 0.0005, 0.02)
-    duplicates = {}
+    offset = np.zeros_like(arrays["means"][selected])
+    parent_radius = np.exp(arrays["scales"][selected][np.arange(split_count), axis])
+    offset[np.arange(split_count), axis] = parent_radius * 0.35
+
+    children = {}
     for key, value in arrays.items():
-        copy = value[selected].copy()
+        first, second = value[selected].copy(), value[selected].copy()
         if key == "means":
-            copy += direction * radius[:, None] * 0.5
+            first -= offset; second += offset
         elif key == "scales":
-            copy -= math.log(1.25)
-        duplicates[key] = copy
-    return {key: mx.array(np.concatenate([arrays[key], duplicates[key]], axis=0), dtype=mx.float32) for key in arrays}, add
+            first -= math.log(1.6); second -= math.log(1.6)
+        elif key == "opacities":
+            # Two children together should initially contribute about as much
+            # density as their parent.
+            first -= math.log(2.0); second -= math.log(2.0)
+        children[key] = np.concatenate([first, second], axis=0)
+    result = {
+        key: mx.array(np.concatenate([value[retained], children[key]], axis=0), dtype=mx.float32)
+        for key, value in arrays.items()
+    }
+    return result, split_count, pruned
+
+
+def reset_opacity(params, maximum_probability: float):
+    maximum_logit = math.log(maximum_probability / (1.0 - maximum_probability))
+    params["opacities"] = mx.minimum(params["opacities"], maximum_logit)
+    return params
+
+
+def final_prune(params, opacity_threshold: float, max_scale: float):
+    arrays = {key: np.asarray(value) for key, value in params.items()}
+    opacity = 1.0 / (1.0 + np.exp(-arrays["opacities"][:, 0]))
+    radii = np.exp(arrays["scales"])
+    keep = (
+        np.isfinite(arrays["means"]).all(1)
+        & np.isfinite(radii).all(1)
+        & (radii.max(1) <= max_scale * 1.01)
+        & (opacity >= opacity_threshold)
+    )
+    return ({key: mx.array(value[keep], dtype=mx.float32) for key, value in arrays.items()}, int((~keep).sum()))
+
+
+def balanced_camera_order(names: list[str]):
+    """Yield shuffled camera-balanced indices forever."""
+    groups: dict[str, list[int]] = {}
+    for index, name in enumerate(names):
+        agent = next((part for part in Path(name).stem.split("_") if part.startswith("a") and part[1:].isdigit()), "all")
+        groups.setdefault(agent, []).append(index)
+    while True:
+        for indices in groups.values():
+            random.shuffle(indices)
+        rounds = max(len(indices) for indices in groups.values())
+        for position in range(rounds):
+            agents = list(groups); random.shuffle(agents)
+            for agent in agents:
+                indices = groups[agent]
+                yield indices[position % len(indices)]
 
 
 def save_ply(path: Path, params) -> None:
@@ -121,11 +205,23 @@ def main() -> None:
     parser.add_argument("--rasterizer", choices=("python", "cpp"), default="cpp")
     parser.add_argument("--normalize", action="store_true")
     parser.add_argument("--densify-every", type=int, default=400)
-    parser.add_argument("--densify-fraction", type=float, default=0.25)
-    parser.add_argument("--max-gaussians", type=int, default=400000)
+    parser.add_argument("--densify-fraction", type=float, default=0.08)
+    parser.add_argument("--densify-until", type=int, default=1800)
+    parser.add_argument("--max-gaussians", type=int, default=250000)
+    parser.add_argument("--min-scale", type=float, default=0.0005)
+    parser.add_argument("--max-scale", type=float, default=0.025)
+    parser.add_argument("--scale-weight", type=float, default=0.02)
+    parser.add_argument("--prune-after", type=int, default=800)
+    parser.add_argument("--opacity-threshold", type=float, default=0.01)
+    parser.add_argument("--final-opacity-threshold", type=float, default=0.005)
+    parser.add_argument("--opacity-reset-every", type=int, default=600)
     args = parser.parse_args()
 
-    xyz, rgb, cameras, targets, masks = load_dataset(args.data_dir, args.img_folder)
+    if not 0 < args.densify_fraction <= 0.5:
+        parser.error("--densify-fraction must be in (0, 0.5]")
+    if not 0 < args.min_scale < args.max_scale:
+        parser.error("scales must satisfy 0 < --min-scale < --max-scale")
+    xyz, rgb, cameras, targets, masks, image_names = load_dataset(args.data_dir, args.img_folder)
     if args.normalize:
         centers = []
         for camera in cameras:
@@ -142,21 +238,36 @@ def main() -> None:
     output = Path("results") / f"{args.data_dir.name}_mlx_adaptive_{datetime.datetime.now():%Y%m%d_%H%M%S}"
     progress = output / "progress"; ply = output / "ply"; progress.mkdir(parents=True); ply.mkdir()
     gradients = mx.zeros((params["means"].shape[0],), dtype=mx.float32)
+    sampler = balanced_camera_order(image_names)
     bar = tqdm(range(args.num_iterations))
     for iteration in bar:
-        index = random.randrange(len(cameras))
-        loss, image, psnr, current_gradients = train_step(params, optimizers, targets[index], masks[index], cameras[index], args.rasterizer)
+        index = next(sampler)
+        loss, image, psnr, current_gradients = train_step(
+            params, optimizers, targets[index], masks[index], cameras[index], args.rasterizer,
+            args.max_scale, args.scale_weight,
+        )
+        params = constrain(params, args.min_scale, args.max_scale)
         gradients = mx.maximum(gradients, current_gradients)
         mx.eval(params, loss, psnr, gradients)
         if iteration % 10 == 0:
             bar.set_description(f"Loss: {loss.item():.4f} PSNR: {psnr.item():.2f} G: {params['means'].shape[0]:,}")
         if iteration % 100 == 0:
             Image.fromarray((np.clip(np.asarray(image), 0, 1) * 255).astype(np.uint8)).save(progress / f"progress_{iteration:04d}.png")
-        if args.densify_every and iteration >= args.densify_every and iteration % args.densify_every == 0:
-            params, added = densify(params, gradients, args.densify_fraction, args.max_gaussians)
-            if added:
-                print(f"\nDensified {added:,} high-gradient Gaussians; total {params['means'].shape[0]:,}")
-                optimizers = make_optimizers(); gradients = mx.zeros((params["means"].shape[0],), dtype=mx.float32)
+        if args.opacity_reset_every and iteration > 0 and iteration < args.densify_until and iteration % args.opacity_reset_every == 0:
+            params = reset_opacity(params, 0.10)
+            optimizers = make_optimizers()
+        if (args.densify_every and iteration >= args.densify_every and iteration <= args.densify_until
+                and iteration % args.densify_every == 0):
+            params, split, pruned = update_topology(
+                params, gradients, args.densify_fraction, args.max_gaussians,
+                args.min_scale, args.max_scale, args.opacity_threshold,
+                allow_pruning=iteration >= args.prune_after,
+            )
+            print(f"\nTopology: split {split:,}, pruned {pruned:,}; total {params['means'].shape[0]:,}")
+            optimizers = make_optimizers(); gradients = mx.zeros((params["means"].shape[0],), dtype=mx.float32)
+    params, final_pruned = final_prune(params, args.final_opacity_threshold, args.max_scale)
+    mx.eval(params)
+    print(f"Final cleanup pruned {final_pruned:,} unsupported Gaussians")
     destination = ply / f"{args.data_dir.name}_final.ply"
     save_ply(destination, params)
     print(f"Saved {params['means'].shape[0]:,} Gaussians to {destination}")

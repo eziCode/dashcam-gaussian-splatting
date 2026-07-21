@@ -62,6 +62,13 @@ if [[ -n "${RUN_ROOT:-}" && -f "${RUN_ROOT}/capture/cooperscene_manifest.json" ]
 else
   export VITE_TIMELINE_URL=""
 fi
+if [[ -n "${RUN_ROOT:-}" && -f "${RUN_ROOT}/geo/geo-context.json" && -f "${RUN_ROOT}/geo/satellite.jpg" ]]; then
+  cp "${RUN_ROOT}/geo/geo-context.json" "${RUNTIME}/geo-context.json"
+  cp "${RUN_ROOT}/geo/satellite.jpg" "${RUNTIME}/satellite.jpg"
+  export VITE_GEO_CONTEXT_URL="/runtime/geo-context.json"
+else
+  export VITE_GEO_CONTEXT_URL=""
+fi
 
 CACHE_BUSTER="$(date +%s)"
 export VITE_GUIDED_MODE=1

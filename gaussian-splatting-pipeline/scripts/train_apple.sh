@@ -28,12 +28,16 @@ DATASET="$(cd "${DATASET}" && pwd)"
 mkdir -p "${OUTPUT_ROOT}"
 (
   cd "${OUTPUT_ROOT}"
-  PYTHONPATH="${UPSTREAM}" "${VENV}/bin/python" "${ROOT}/scripts/train_mlx_adaptive.py" \
+  COMMAND=("${VENV}/bin/python" "${ROOT}/scripts/train_mlx_adaptive.py" \
     --data_dir "${DATASET}" \
     --img_folder images \
     --num_iterations "${ITERATIONS}" \
     --rasterizer cpp \
-    --normalize
+    --normalize)
+  if (( $# > 3 )); then
+    COMMAND+=("${@:4}")
+  fi
+  PYTHONPATH="${UPSTREAM}" "${COMMAND[@]}"
 )
 
 LATEST="$(find "${OUTPUT_ROOT}/results" -type f -name '*_final.ply' -print0 | xargs -0 ls -t | head -1)"
