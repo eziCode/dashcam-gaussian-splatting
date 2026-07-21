@@ -44,7 +44,7 @@ def quaternion_to_rotation(quaternion: np.ndarray) -> np.ndarray:
     ])
 
 
-def load_camera_path(dataset: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+def load_camera_path_with_transform(dataset: Path):
     images_path = dataset / "sparse" / "0" / "images.bin"
     centers, forwards, ups, names = [], [], [], []
     with images_path.open("rb") as handle:
@@ -68,7 +68,12 @@ def load_camera_path(dataset: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray,
     centers_array = np.asarray(centers)
     centroid = centers_array.mean(axis=0)
     scale = 1.0 / (np.linalg.norm(centers_array - centroid, axis=1).mean() + 1e-6)
-    return (centers_array - centroid) * scale, np.asarray(forwards), np.asarray(ups), names
+    return (centers_array - centroid) * scale, np.asarray(forwards), np.asarray(ups), names, centroid, scale
+
+
+def load_camera_path(dataset: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+    centers, forwards, ups, names, _, _ = load_camera_path_with_transform(dataset)
+    return centers, forwards, ups, names
 
 
 def fallback_camera(means: np.ndarray):

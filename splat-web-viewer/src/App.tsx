@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d'
+import * as THREE from 'three'
 import {
   ArrowDown, ArrowRight, Box, Camera, Check, ChevronDown, CircleDot,
   Cloud, Code2, Database, Download, Focus, Layers3, Maximize, Menu,
@@ -9,18 +10,51 @@ import {
 import { StateFarmMark } from '@/components/StateFarmMark'
 
 type ViewerStatus = 'idle' | 'loading' | 'ready' | 'error'
-type CameraPath = { centers: number[][]; forward: number[]; up: number[]; radius: number }
+type CameraPath = { centers: number[][]; forwards: number[][]; ups: number[][]; names: string[]; radius: number }
 
 const runtimeParams = new URLSearchParams(window.location.search)
 const runtimeEnvironment = (import.meta as any).env as Record<string, string | undefined>
 const runtimeScene = runtimeParams.get('scene') ?? runtimeEnvironment.VITE_SCENE_URL ?? '/demo/merged-rooms.ply'
 const guidedMode = runtimeEnvironment.VITE_GUIDED_MODE === '1' || runtimeParams.get('guided') === '1'
+const timelineUrl = runtimeEnvironment.VITE_TIMELINE_URL
+
+type DynamicTimeline = { frameCount: number; frames: Array<{ index: number; frameId: string; objects: Array<{ id: string; center: number[]; size: number[]; yawDegrees: number }> }> }
+
+function installDynamicTimeline(viewer: any, root: HTMLElement, timeline: DynamicTimeline) {
+  const group = new THREE.Group(); viewer.threeScene.add(group)
+  const panel = document.createElement('div')
+  panel.dataset.viewerUi = 'true'
+  panel.className = 'absolute bottom-24 left-1/2 z-20 w-[min(620px,calc(100%-2rem))] -translate-x-1/2 rounded-xl border border-white/10 bg-black/75 px-4 py-3 text-white backdrop-blur'
+  const label = document.createElement('div'); label.className = 'mb-2 text-xs font-semibold'
+  const slider = document.createElement('input')
+  slider.type = 'range'; slider.min = '0'; slider.max = String(Math.max(0, timeline.frameCount - 1)); slider.value = '0'; slider.className = 'w-full accent-red-600'
+  panel.append(label, slider); root.append(panel)
+  const renderFrame = (index: number) => {
+    while (group.children.length) {
+      const child = group.children.pop() as THREE.Mesh
+      child.geometry?.dispose(); (child.material as THREE.Material)?.dispose()
+    }
+    const frame = timeline.frames[index]
+    label.textContent = `Timestep ${index + 1} / ${timeline.frameCount} · source ${frame.frameId}`
+    frame.objects.forEach((object) => {
+      const material = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL((Number(object.id) * .137) % 1, .8, .55), transparent: true, opacity: .7, wireframe: true })
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(object.size[0], object.size[1], object.size[2]), material)
+      mesh.position.set(object.center[0], object.center[1], object.center[2]); mesh.rotation.z = -object.yawDegrees * Math.PI / 180; group.add(mesh)
+    })
+    viewer.forceRenderNextFrame?.()
+  }
+  slider.addEventListener('input', () => renderFrame(Number(slider.value))); renderFrame(0)
+  return { dispose: () => { panel.remove(); viewer.threeScene.remove(group); group.clear() } }
+}
 
 function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath) {
   const camera = viewer.camera
   const start = path.centers[0]
-  let yaw = Math.atan2(path.forward[0], path.forward[2])
-  let pitch = Math.asin(Math.max(-0.98, Math.min(0.98, path.forward[1])))
+  let startIndex = 0
+  let baseForward = new THREE.Vector3(...path.forwards[0]).normalize()
+  let sceneUp = new THREE.Vector3(...path.ups[0]).normalize()
+  let yaw = 0
+  let pitch = 0
   let dragging = false
   let previousX = 0
   let previousY = 0
@@ -28,17 +62,18 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
   let lastTime = performance.now()
   const keys = new Set<string>()
 
-  const direction = () => [
-    Math.sin(yaw) * Math.cos(pitch),
-    Math.sin(pitch),
-    Math.cos(yaw) * Math.cos(pitch),
-  ]
+  const direction = () => {
+    const forward = baseForward.clone().applyAxisAngle(sceneUp, yaw).normalize()
+    const right = sceneUp.clone().cross(forward).normalize()
+    return forward.applyAxisAngle(right, pitch).normalize()
+  }
   const renderCamera = () => {
     const forward = direction()
+    camera.up.copy(sceneUp)
     camera.lookAt?.(
-      camera.position.x + forward[0],
-      camera.position.y + forward[1],
-      camera.position.z + forward[2],
+      camera.position.x + forward.x,
+      camera.position.y + forward.y,
+      camera.position.z + forward.z,
     )
     viewer.forceRenderNextFrame?.()
   }
@@ -54,25 +89,30 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
     if (inside(x, y, z)) camera.position.set(x, y, z)
   }
   const reset = () => {
-    camera.position.set(start[0], start[1], start[2])
-    yaw = Math.atan2(path.forward[0], path.forward[2])
-    pitch = Math.asin(Math.max(-0.98, Math.min(0.98, path.forward[1])))
+    const position = path.centers[startIndex] ?? start
+    const forward = path.forwards[startIndex] ?? path.forwards[0]
+    const up = path.ups[startIndex] ?? path.ups[0]
+    camera.position.set(position[0], position[1], position[2])
+    baseForward = new THREE.Vector3(...forward).normalize()
+    sceneUp = new THREE.Vector3(...up).normalize()
+    yaw = 0; pitch = 0
     renderCamera()
   }
+  const nextRecordedView = () => { startIndex = (startIndex + 1) % path.centers.length; reset() }
   const animate = (now: number) => {
     const dt = Math.min((now - lastTime) / 1000, 0.05)
     lastTime = now
-    const forward = [Math.sin(yaw), 0, Math.cos(yaw)]
-    const right = [Math.cos(yaw), 0, -Math.sin(yaw)]
-    let x = 0, y = 0, z = 0
-    if (keys.has('KeyW') || keys.has('ArrowUp')) { x += forward[0]; z += forward[2] }
-    if (keys.has('KeyS') || keys.has('ArrowDown')) { x -= forward[0]; z -= forward[2] }
-    if (keys.has('KeyD') || keys.has('ArrowRight')) { x += right[0]; z += right[2] }
-    if (keys.has('KeyA') || keys.has('ArrowLeft')) { x -= right[0]; z -= right[2] }
-    if (keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyE')) y += 1
-    if (keys.has('Space') || keys.has('KeyQ')) y -= 1
-    const length = Math.hypot(x, y, z)
-    if (length) tryMove(x / length * dt * 0.7, y / length * dt * 0.7, z / length * dt * 0.7)
+    const look = direction()
+    const forward = look.clone().addScaledVector(sceneUp, -look.dot(sceneUp)).normalize()
+    const right = sceneUp.clone().cross(forward).normalize()
+    const movement = new THREE.Vector3()
+    if (keys.has('KeyW') || keys.has('ArrowUp')) movement.add(forward)
+    if (keys.has('KeyS') || keys.has('ArrowDown')) movement.sub(forward)
+    if (keys.has('KeyD') || keys.has('ArrowRight')) movement.add(right)
+    if (keys.has('KeyA') || keys.has('ArrowLeft')) movement.sub(right)
+    if (keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyE')) movement.add(sceneUp)
+    if (keys.has('Space') || keys.has('KeyQ')) movement.sub(sceneUp)
+    if (movement.lengthSq()) { movement.normalize().multiplyScalar(dt * .7); tryMove(movement.x, movement.y, movement.z) }
     renderCamera()
     frame = requestAnimationFrame(animate)
   }
@@ -84,6 +124,7 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
   const keyUp = (event: KeyboardEvent) => keys.delete(event.code)
   const clearKeys = () => keys.clear()
   const pointerDown = (event: PointerEvent) => {
+    if ((event.target as HTMLElement)?.closest?.('[data-viewer-ui="true"]')) return
     event.stopPropagation()
     dragging = true; previousX = event.clientX; previousY = event.clientY
     root.setPointerCapture(event.pointerId); root.focus()
@@ -97,6 +138,7 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
   }
   const pointerUp = (event: PointerEvent) => { event.stopPropagation(); dragging = false }
   const wheel = (event: WheelEvent) => {
+    if ((event.target as HTMLElement)?.closest?.('[data-viewer-ui="true"]')) return
     event.preventDefault(); event.stopPropagation()
   }
 
@@ -109,7 +151,7 @@ function installGuidedControls(viewer: any, root: HTMLElement, path: CameraPath)
   root.addEventListener('pointercancel', pointerUp, true)
   root.addEventListener('wheel', wheel, { passive: false, capture: true })
   reset(); frame = requestAnimationFrame(animate)
-  return { reset, dispose: () => {
+  return { reset, nextRecordedView, dispose: () => {
     cancelAnimationFrame(frame)
     window.removeEventListener('keydown', keyDown, true); window.removeEventListener('keyup', keyUp, true)
     window.removeEventListener('blur', clearKeys)
@@ -323,6 +365,7 @@ function SplatViewer() {
   const rootRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<any>(null)
   const guidedRef = useRef<ReturnType<typeof installGuidedControls> | null>(null)
+  const timelineRef = useRef<ReturnType<typeof installDynamicTimeline> | null>(null)
   const sectionRef = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState<ViewerStatus>('idle')
   const [progress, setProgress] = useState(0)
@@ -332,6 +375,7 @@ function SplatViewer() {
     if (!viewer) return
     viewerRef.current = null
     guidedRef.current?.dispose(); guidedRef.current = null
+    timelineRef.current?.dispose(); timelineRef.current = null
     const renderer = viewer.renderer
     viewer.usingExternalRenderer = true
     try { await viewer.dispose() } finally { renderer?.dispose?.(); renderer?.domElement?.remove?.() }
@@ -370,6 +414,10 @@ function SplatViewer() {
         const response = await fetch('/runtime/camera-path.json')
         if (!response.ok) throw new Error('Could not load guided camera path')
         guidedRef.current = installGuidedControls(viewer, rootRef.current, await response.json())
+        if (timelineUrl) {
+          const timelineResponse = await fetch(timelineUrl)
+          if (timelineResponse.ok) timelineRef.current = installDynamicTimeline(viewer, rootRef.current, await timelineResponse.json())
+        }
       }
       setProgress(94); viewer.start(); setProgress(100); setStatus('ready')
     } catch (error) { console.error(error); setStatus('error'); await destroy() }
@@ -401,7 +449,7 @@ function SplatViewer() {
     {status === 'ready' && <>
       <div className="pointer-events-none absolute left-5 top-5 rounded-xl border border-white/10 bg-black/65 px-4 py-3 backdrop-blur md:left-7 md:top-7"><p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/45">Interactive scene</p><p className="mt-1.5 text-sm font-medium">{guidedMode ? 'Drag to look · WASD to move · Ctrl up / Space down · boundary locked' : 'Drag to orbit · scroll to zoom'}</p></div>
       <div className="absolute bottom-5 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-black/75 p-1.5 backdrop-blur">
-        <ViewerButton label="Orbit"><MousePointer2 className="h-4 w-4" /></ViewerButton><ViewerButton label="Reset" onClick={reset}><RotateCcw className="h-4 w-4" /></ViewerButton><ViewerButton label="Fullscreen" onClick={fullscreen}><Maximize className="h-4 w-4" /></ViewerButton>
+        <ViewerButton label="Recorded view" onClick={() => guidedRef.current?.nextRecordedView?.()}><Camera className="h-4 w-4" /></ViewerButton><ViewerButton label="Reset" onClick={reset}><RotateCcw className="h-4 w-4" /></ViewerButton><ViewerButton label="Fullscreen" onClick={fullscreen}><Maximize className="h-4 w-4" /></ViewerButton>
       </div>
     </>}
   </div>

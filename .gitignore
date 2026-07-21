@@ -5,5 +5,7 @@ runs/
 *.log
 __pycache__/
 *.py[cod]
+gaussian-splatting-pipeline/data/cooperscene*/
+gaussian-splatting-pipeline/data/cooperscene*.zip
 splat-web-viewer/node_modules/
 splat-cloud-generator/.venv/

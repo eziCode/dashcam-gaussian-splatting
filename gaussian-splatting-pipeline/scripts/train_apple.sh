@@ -28,7 +28,7 @@ DATASET="$(cd "${DATASET}" && pwd)"
 mkdir -p "${OUTPUT_ROOT}"
 (
   cd "${OUTPUT_ROOT}"
-  PYTHONPATH="${UPSTREAM}" "${VENV}/bin/python" "${UPSTREAM}/train_mlx.py" \
+  PYTHONPATH="${UPSTREAM}" "${VENV}/bin/python" "${ROOT}/scripts/train_mlx_adaptive.py" \
     --data_dir "${DATASET}" \
     --img_folder images \
     --num_iterations "${ITERATIONS}" \

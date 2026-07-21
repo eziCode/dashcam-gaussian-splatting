@@ -28,8 +28,10 @@ if [[ "${PLY}" != "${DENSE_PLY}" && -f "${DENSE_PLY}" ]]; then
   echo "Using dense measured underlay: ${DENSE_PLY}"
   PLY="${DENSE_PLY}"
 fi
-if [[ -z "${DATASET}" && "${PLY}" == */training/results/* ]]; then
-  RUN_ROOT="${PLY%%/training/results/*}"
+if [[ "${PLY}" == */training*/results/* ]]; then
+  RUN_ROOT="${PLY%%/training*/results/*}"
+fi
+if [[ -z "${DATASET}" && -n "${RUN_ROOT:-}" ]]; then
   for candidate in "${RUN_ROOT}/arkit-dataset" "${RUN_ROOT}/colmap"; do
     if [[ -f "${candidate}/sparse/0/images.bin" ]]; then
       DATASET="${candidate}"
@@ -49,9 +51,17 @@ command -v npm >/dev/null || { echo "npm is required for the guided web viewer."
 DATASET="$(cd "${DATASET}" && pwd)"
 RUNTIME="${WEB_ROOT}/public/runtime"
 mkdir -p "${RUNTIME}"
-cp "${PLY}" "${RUNTIME}/model.ply"
+"${VENV}/bin/python" "${ROOT}/scripts/sanitize_splat_scales.py" \
+  "${PLY}" "${RUNTIME}/model.ply"
 "${VENV}/bin/python" "${ROOT}/scripts/export_camera_path.py" \
   "${DATASET}" "${RUNTIME}/camera-path.json"
+if [[ -n "${RUN_ROOT:-}" && -f "${RUN_ROOT}/capture/cooperscene_manifest.json" ]]; then
+  "${VENV}/bin/python" "${ROOT}/scripts/export_scene_timeline.py" \
+    "${DATASET}" "${RUN_ROOT}/capture/cooperscene_manifest.json" "${RUNTIME}/timeline.json"
+  export VITE_TIMELINE_URL="/runtime/timeline.json"
+else
+  export VITE_TIMELINE_URL=""
+fi
 
 CACHE_BUSTER="$(date +%s)"
 export VITE_GUIDED_MODE=1

@@ -81,6 +81,58 @@ renders are saved alongside it. The viewer serves an interactive page at
 `http://localhost:8080`. The preparation step is intentionally
 non-destructive and refuses to overwrite an existing reconstruction.
 
+## Synchronized multi-dashcam reconstruction with CooperScene
+
+The CooperScene integration is RGB-only. It reads synchronized
+`*_camera*.png` observations from multiple agents and never reads the dataset's
+PCD/LiDAR files. Each exported image retains its global frame ID, agent ID,
+camera ID, role, and annotation path in `timeline.json` so later crash playback
+can keep dynamic observations aligned with the static reconstruction.
+
+Because short traffic clips often contain stopped vehicles and little visual
+parallax, the CooperScene path initializes camera placement from the dataset's
+calibrated platform poses and RGB camera-to-platform transforms. COLMAP then
+triangulates and bundle-adjusts those cameras using RGB feature matches. This
+does not use LiDAR ranges or point clouds. For consumer footage, GPS/IMU can
+provide the same optional initialization; sufficiently varied video falls back
+to visual pose recovery.
+
+Download and extract the official CooperScene mini set, then run on Apple
+Silicon:
+
+```bash
+cd gaussian-splatting-pipeline
+./scripts/setup_apple.sh
+./scripts/run_cooperscene_apple.sh data/cooperscene-mini cooperscene_demo train '' 1 180 2000
+```
+
+The mini set contains three synchronized front-facing vehicle cameras. In the
+currently published core archive, agent 0 (the roadside unit) is LiDAR-only,
+so it cannot supply a roadside RGB observation. The adapter automatically
+accepts additional camera-equipped agents in the same CooperScene directory
+layout and supports `--infrastructure-agent ID` when roadside RGB becomes
+available.
+
+The CooperScene path also projects its metric vehicle boxes into per-frame RGB
+validity masks. The Apple trainer excludes those pixels from the static-scene
+loss, adaptively splits high-gradient Gaussians every 400 iterations, and keeps
+the tracked vehicles in `timeline.json` for independent timestep playback.
+This prevents moving traffic from being baked into the background splat.
+
+The custom viewer starts at a recorded camera pose and constrains movement to
+a narrow `0.10`-radius corridor around measured camera positions. It caps the
+largest two percent of Gaussian radii at load time instead of stretching them
+across unobserved space. CooperScene runs additionally show a timeline slider
+and colored tracked-vehicle boxes. These boxes are an explicit evidence layer,
+not synthesized vehicle appearance.
+
+For a fast ingestion check without COLMAP or training:
+
+```bash
+python3 scripts/prepare_cooperscene_rgb.py \
+  data/cooperscene-mini /tmp/cooperscene-rgb --max-timesteps 10
+```
+
 ## What the pipeline does
 
 1. Extracts and sequentially matches SIFT features using COLMAP on CPU.
