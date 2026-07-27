@@ -1,0 +1,17 @@
+.git
+**/.venv*
+**/node_modules
+**/__pycache__
+**/*.pyc
+gaussian-splatting-pipeline
+splat-cloud-generator
+swift-app
+splat-web-viewer/dist
+splat-web-viewer/public/runtime
+splat-web-viewer/splat_outputs
+vggt-transformer-pipeline/third_party
+vggt-transformer-pipeline/data
+vggt-transformer-pipeline/runs
+gaussian-splatting-pipeline/data
+gaussian-splatting-pipeline/runs
+gaussian-splatting-pipeline/outputs

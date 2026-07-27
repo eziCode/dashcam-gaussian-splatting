@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import math
 import os
 import random
@@ -30,6 +31,39 @@ from torch_gs.io.colmap import load_colmap_data_raw
 
 
 def load_dataset(path: Path, image_folder: str):
+    manifest = path / "cameras.json"
+    if manifest.is_file():
+        payload = json.loads(manifest.read_text())
+        records = payload["records"]
+        centers = np.asarray([record["center"] for record in records], dtype=np.float32)
+        centroid = centers.mean(0)
+        scene_scale = 1.0 / (np.linalg.norm(centers - centroid, axis=1).mean() + 1e-6)
+        cameras, targets, masks, names = [], [], [], []
+        mask_root = path / "masks"
+        for record in records:
+            image_path = path / image_folder / record["image"]
+            with Image.open(image_path) as source:
+                target = np.asarray(source.convert("RGB"), dtype=np.float32) / 255.0
+            height, width = target.shape[:2]
+            intrinsic = np.asarray(record["intrinsic"], dtype=np.float32)
+            # Intrinsics in V2X metadata correspond to the source JPEG.
+            w2c = np.eye(4, dtype=np.float32)
+            rotation = np.asarray(record["rotation"], dtype=np.float32)
+            translation = np.asarray(record["translation"], dtype=np.float32)
+            w2c[:3, :3] = rotation
+            w2c[:3, 3] = (rotation @ centroid + translation) * scene_scale
+            cameras.append(Camera(width, height, float(intrinsic[0, 0]), float(intrinsic[1, 1]),
+                                  float(intrinsic[0, 2]), float(intrinsic[1, 2]),
+                                  mx.array(w2c), mx.eye(4)))
+            targets.append(mx.array(target))
+            mask_path = mask_root / record["image"]
+            if mask_path.is_file():
+                with Image.open(mask_path) as mask:
+                    valid = np.asarray(mask.convert("L").resize((width, height), Image.Resampling.NEAREST), dtype=np.float32) / 255.0
+            else:
+                valid = np.ones((height, width), dtype=np.float32)
+            masks.append(mx.array(valid[..., None])); names.append(record["image"])
+        return None, None, cameras, targets, masks, names
     xyz, rgb, infos = load_colmap_data_raw(str(path), image_folder)
     cameras, targets, masks, names = [], [], [], []
     mask_root = path / "masks"
@@ -61,7 +95,8 @@ def make_optimizers():
     }
 
 
-def train_step(params, optimizers, target, valid, camera, rasterizer, max_scale, scale_weight):
+def train_step(params, optimizers, target, valid, camera, rasterizer, max_scale, scale_weight,
+               prior_means, depth_prior_weight):
     def loss_fn(values):
         image = render(values, camera, rasterizer_type=rasterizer)
         # Dynamic pixels contribute neither RGB nor SSIM gradients. Compositing
@@ -73,7 +108,11 @@ def train_step(params, optimizers, target, valid, camera, rasterizer, max_scale,
         # Penalize both huge splats and extreme needles, the two most visible
         # causes of colored fog in sparse outdoor reconstructions.
         anisotropy = mx.maximum(mx.max(values["scales"], axis=1) - mx.min(values["scales"], axis=1) - math.log(8.0), 0.0)
-        loss = photometric + scale_weight * (mx.mean(mx.square(oversize)) + 0.1 * mx.mean(mx.square(anisotropy)))
+        regularizer = scale_weight * (mx.mean(mx.square(oversize)) + 0.1 * mx.mean(mx.square(anisotropy)))
+        # The initialization is the fused VGGT depth surface. Keeping Gaussian
+        # centers near it is a robust depth prior even after topology changes.
+        depth_prior = mx.mean(mx.sum(mx.square(values["means"] - prior_means), axis=1))
+        loss = photometric + regularizer + depth_prior_weight * depth_prior
         return loss, image
 
     (loss, image), grads = mx.value_and_grad(loss_fn)(params)
@@ -197,6 +236,22 @@ def save_ply(path: Path, params) -> None:
     PlyData([PlyElement.describe(elements, "vertex")]).write(path)
 
 
+def load_initial_ply(path: Path):
+    vertex = PlyData.read(path)["vertex"].data
+    def columns(names):
+        return np.column_stack([np.asarray(vertex[name], dtype=np.float32) for name in names])
+    params = {
+        "means": columns(("x", "y", "z")),
+        "scales": columns(("scale_0", "scale_1", "scale_2")),
+        "quaternions": columns(("rot_0", "rot_1", "rot_2", "rot_3")),
+        "opacities": np.asarray(vertex["opacity"], dtype=np.float32)[:, None],
+        "sh_coeffs": columns(("f_dc_0", "f_dc_1", "f_dc_2"))[:, None, :],
+    }
+    # Keep initialization on the CPU until any point-count cap is applied;
+    # NumPy advanced indexing cannot be used directly on MLX arrays.
+    return params
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data_dir", type=Path, required=True)
@@ -215,6 +270,12 @@ def main() -> None:
     parser.add_argument("--opacity-threshold", type=float, default=0.01)
     parser.add_argument("--final-opacity-threshold", type=float, default=0.005)
     parser.add_argument("--opacity-reset-every", type=int, default=600)
+    parser.add_argument("--initial-ply", type=Path,
+                        help="Initialize all Gaussian attributes from a VGGT surfel PLY")
+    parser.add_argument("--depth-prior-weight", type=float, default=0.02,
+                        help="Weight keeping centers near the fused VGGT depth surface")
+    parser.add_argument("--max-initial-gaussians", type=int, default=300000,
+                        help="Deterministically cap a dense VGGT initialization")
     args = parser.parse_args()
 
     if not 0 < args.densify_fraction <= 0.5:
@@ -232,8 +293,20 @@ def main() -> None:
             w2c = np.asarray(camera.W2C); w2c[:3, 3] = (w2c[:3, :3] @ centroid + w2c[:3, 3]) * scale
             camera.W2C = mx.array(w2c, dtype=mx.float32)
 
-    gaussian = init_gaussians_from_pcd(xyz, rgb)
-    params = {key: getattr(gaussian, key) for key in ("means", "scales", "quaternions", "opacities", "sh_coeffs")}
+    if args.initial_ply:
+        params = load_initial_ply(args.initial_ply)
+        if len(params["means"]) > args.max_initial_gaussians:
+            selection = np.random.default_rng(42).choice(
+                len(params["means"]), args.max_initial_gaussians, replace=False
+            )
+            params = {key: value[selection] for key, value in params.items()}
+        params = {key: mx.array(value, dtype=mx.float32) for key, value in params.items()}
+    else:
+        if xyz is None or not len(xyz):
+            parser.error("native cameras.json datasets require --initial-ply")
+        gaussian = init_gaussians_from_pcd(xyz, rgb)
+        params = {key: getattr(gaussian, key) for key in ("means", "scales", "quaternions", "opacities", "sh_coeffs")}
+    prior_means = params["means"]
     optimizers = make_optimizers()
     output = Path("results") / f"{args.data_dir.name}_mlx_adaptive_{datetime.datetime.now():%Y%m%d_%H%M%S}"
     progress = output / "progress"; ply = output / "ply"; progress.mkdir(parents=True); ply.mkdir()
@@ -244,7 +317,7 @@ def main() -> None:
         index = next(sampler)
         loss, image, psnr, current_gradients = train_step(
             params, optimizers, targets[index], masks[index], cameras[index], args.rasterizer,
-            args.max_scale, args.scale_weight,
+            args.max_scale, args.scale_weight, prior_means, args.depth_prior_weight,
         )
         params = constrain(params, args.min_scale, args.max_scale)
         gradients = mx.maximum(gradients, current_gradients)
@@ -265,11 +338,23 @@ def main() -> None:
             )
             print(f"\nTopology: split {split:,}, pruned {pruned:,}; total {params['means'].shape[0]:,}")
             optimizers = make_optimizers(); gradients = mx.zeros((params["means"].shape[0],), dtype=mx.float32)
+            prior_means = params["means"]
     params, final_pruned = final_prune(params, args.final_opacity_threshold, args.max_scale)
     mx.eval(params)
     print(f"Final cleanup pruned {final_pruned:,} unsupported Gaussians")
     destination = ply / f"{args.data_dir.name}_final.ply"
     save_ply(destination, params)
+    provenance = {
+        "method": "Masked L1+SSIM Gaussian refinement initialized from VGGT geometry",
+        "sourceDataset": str(args.data_dir.resolve()),
+        "initialPly": str(args.initial_ply.resolve()) if args.initial_ply else None,
+        "dynamicMasksUsed": (args.data_dir / "masks").is_dir(),
+        "depthPriorWeight": args.depth_prior_weight,
+        "pointCount": int(params["means"].shape[0]),
+        "parameters": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
+        "warning": "VGGT geometry is model-inferred and refinement must not be described as measured geometry.",
+    }
+    destination.with_suffix(".json").write_text(json.dumps(provenance, indent=2) + "\n")
     print(f"Saved {params['means'].shape[0]:,} Gaussians to {destination}")
 
 

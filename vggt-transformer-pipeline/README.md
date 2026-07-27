@@ -124,3 +124,41 @@ View the completed sample with:
 ./scripts/view.sh \
   runs/v2x-real-mid/scene.ply 8080 runs/v2x-real-mid/prepared
 ```
+
+## Joint geometry and Gaussian refinement
+
+The reconstruction CLI can compare the robust per-camera temporal mode with a
+joint synchronized multi-camera pass (`--chunk-mode timestep`). Add
+`--geometry-head point` to use VGGT's joint point map instead of depth
+unprojection, and `--depth-cache DIR` to retain depth/confidence priors for
+auditing and downstream refinement.
+
+On Apple Silicon, refine the fused VGGT PLY photometrically with the calibrated
+camera poses and dynamic vehicle masks:
+
+```bash
+./scripts/refine_v2x_apple.sh \
+  runs/v2x-real-mid/prepared runs/v2x-real-mid/scene.ply 3000
+```
+
+This initializes Gaussian positions, colors, opacity, orientation, and scale
+from the VGGT PLY; optimizes masked L1+SSIM; applies scale/anisotropy and VGGT
+geometry-prior regularization; and conservatively densifies/prunes. The final
+viewer-compatible file is `runs/v2x-real-mid/refined/scene-refined.ply`.
+
+### Global multi-camera accident-scene pipeline
+
+The global preset avoids feeding unrelated viewpoints into one transformer
+call. Moving dashcams use coherent temporal clips; stationary roadside cameras
+on the same agent use a joint calibrated-rig inference. All results are placed
+in the shared calibrated world, registered to a robust common road height,
+confidence-filtered and fused, then optimized photometrically against every
+camera with dynamic vehicles masked:
+
+```bash
+./scripts/run_v2x_global_apple.sh data/v2x-real-connected runs/v2x-global 3000
+```
+
+Use `0` instead of `3000` for a VGGT-only diagnostic run. Registration shifts
+for every physical camera stream are printed and saved in `scene-vggt.json`;
+the bounded shifts make calibration/model failures auditable.

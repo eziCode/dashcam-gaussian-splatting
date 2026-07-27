@@ -1,5 +1,26 @@
 # Gaussian Splatting reconstruction pipeline
 
+## Containerized V2X viewer
+
+Docker can keep the V2X viewer running without an active terminal:
+
+```bash
+./scripts/view_container.sh
+```
+
+Open <http://localhost:8080>. The service restarts automatically with Docker
+Desktop. To display a refined result instead, run:
+
+```bash
+V2X_PLY=/workspace/vggt-transformer-pipeline/runs/v2x-real-mid/refined/scene-refined.ply \
+  docker compose up -d --build
+```
+
+Apple Metal is not exposed to Linux containers by Docker Desktop, so MLX/VGGT
+GPU reconstruction and refinement must run natively on macOS. The viewer and
+all runtime overlay preparation are containerized; NVIDIA Linux hosts can use
+the repository's CUDA/gsplat scripts in a GPU-enabled container separately.
+
 This project reconstructs the dense statue capture with COLMAP, then trains a
 Gaussian Splat locally with MLX and Metal on an Apple Silicon Mac.
 

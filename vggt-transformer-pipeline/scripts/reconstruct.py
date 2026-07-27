@@ -98,8 +98,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--timesteps-per-chunk", type=int, default=4, help="Temporal views from one camera per chunk")
     parser.add_argument("--chunk-overlap", type=int, default=2)
     parser.add_argument("--agents", nargs="*", help="Optional CooperScene agent IDs, e.g. --agents 2 3")
-    parser.add_argument("--chunk-mode", choices=("camera", "timestep"), default="camera",
-                        help="Group temporal views per camera or synchronized views across cameras")
+    parser.add_argument("--chunk-mode", choices=("camera", "timestep", "hybrid"), default="camera",
+                        help="Temporal streams, synchronized cameras, or moving streams plus static camera rigs")
     parser.add_argument("--confidence-percentile", type=float, default=55.0)
     parser.add_argument("--pixel-stride", type=int, default=2)
     parser.add_argument("--voxel-size", type=float, default=0.003)
@@ -125,6 +125,14 @@ def arguments() -> argparse.Namespace:
                         help="Color surfels from carefully resampled original-resolution RGB frames")
     parser.add_argument("--max-relative-depth-gradient", type=float, default=0.0,
                         help="Reject depth-discontinuity pixels above this relative neighbor gradient")
+    parser.add_argument("--geometry-head", choices=("depth", "point"), default="depth",
+                        help="Use depth unprojection or VGGT's jointly consistent point map")
+    parser.add_argument("--depth-cache", type=Path,
+                        help="Optional directory for per-chunk VGGT depth/confidence priors")
+    parser.add_argument("--ground-register", action="store_true",
+                        help="Vertically register independently inferred groups using robust lower-image road support")
+    parser.add_argument("--max-ground-shift", type=float, default=0.15,
+                        help="Maximum normalized vertical correction per group")
     return parser.parse_args()
 
 
@@ -292,6 +300,66 @@ def make_chunks(names: list[str], frame_stride: int, size: int, overlap: int,
     return chunks
 
 
+def make_hybrid_chunks(names: list[str], centers: dict[str, np.ndarray], frame_stride: int,
+                       size: int, overlap: int, moving_span: float) -> list[list[str]]:
+    """Use temporal chunks for moving cameras and one joint chunk per static rig.
+
+    VGGT benefits from coherent video, while a stationary roadside camera has
+    no temporal baseline. Multiple fixed cameras on the same roadside agent
+    form a calibrated rig and are therefore inferred together once.
+    """
+    grouped: dict[str, dict[str, list[tuple[int, str]]]] = {}
+    for name in names:
+        agent, camera, timestep = AGENT.search(name), CAMERA.search(name), TIMESTEP.match(Path(name).name)
+        if agent and camera and timestep:
+            grouped.setdefault(agent.group(1), {}).setdefault(camera.group(1), []).append(
+                (int(timestep.group(1)), name)
+            )
+    chunks = []
+    step = max(1, size - overlap)
+    for streams in grouped.values():
+        spans = {}
+        for camera, sequence in streams.items():
+            stream_centers = np.asarray([centers[name] for _, name in sequence])
+            spans[camera] = float(np.max(np.linalg.norm(stream_centers - stream_centers.mean(0), axis=1)))
+        if max(spans.values(), default=0.0) >= moving_span:
+            for sequence in streams.values():
+                selected = [name for _, name in sorted(sequence)][::frame_stride]
+                for index in range(0, len(selected), step):
+                    chunk = selected[index:index + size]
+                    if len(chunk) >= 2:
+                        chunks.append(chunk)
+        else:
+            by_timestep: dict[int, list[str]] = {}
+            for sequence in streams.values():
+                for timestep, name in sequence:
+                    by_timestep.setdefault(timestep, []).append(name)
+            # The median timestep represents a static rig without feeding VGGT
+            # duplicate poses from the whole clip.
+            selected_times = sorted(by_timestep)[::frame_stride]
+            if selected_times:
+                rig = sorted(by_timestep[selected_times[len(selected_times) // 2]])
+                if len(rig) >= 2:
+                    chunks.append(rig)
+    return chunks
+
+
+def register_group_ground(points: np.ndarray, sources: np.ndarray, heights: dict[int, float],
+                          maximum_shift: float) -> tuple[np.ndarray, dict[int, float], float]:
+    """Align independently predicted road sheets with bounded z translations."""
+    finite = {source: height for source, height in heights.items() if np.isfinite(height)}
+    if len(finite) < 2:
+        return points, {}, float("nan")
+    target = float(np.median(list(finite.values())))
+    corrected = points.copy()
+    shifts = {}
+    for source, height in finite.items():
+        shift = float(np.clip(target - height, -maximum_shift, maximum_shift))
+        corrected[sources == source, 2] += shift
+        shifts[source] = shift
+    return corrected, shifts, target
+
+
 def add_baseline_anchors(chunks: list[list[str]], all_names: list[str], centers: dict[str, np.ndarray],
                          minimum_span: float, maximum_anchors: int) -> list[list[str]]:
     """Add distant frames from the same camera when local motion cannot establish scale."""
@@ -322,7 +390,7 @@ def add_baseline_anchors(chunks: list[list[str]], all_names: list[str], centers:
     return result
 
 
-def inference(model, images: torch.Tensor, device: torch.device):
+def inference(model, images: torch.Tensor, device: torch.device, geometry_head: str):
     autocast = (
         torch.autocast(device_type="mps", dtype=torch.float16)
         if device.type == "mps"
@@ -332,12 +400,19 @@ def inference(model, images: torch.Tensor, device: torch.device):
         tokens, patch_start = model.aggregator(images[None])
         pose = model.camera_head(tokens)[-1]
         depth, confidence = model.depth_head(tokens, images=images[None], patch_start_idx=patch_start)
+        point_map = point_confidence = None
+        if geometry_head == "point":
+            point_map, point_confidence = model.point_head(
+                tokens, images=images[None], patch_start_idx=patch_start
+            )
         extrinsic, intrinsic = pose_encoding_to_extri_intri(pose, images.shape[-2:])
     return (
         extrinsic[0].float().cpu().numpy(),
         intrinsic[0].float().cpu().numpy(),
         depth[0].float().cpu().numpy(),
         confidence[0].float().cpu().numpy(),
+        None if point_map is None else point_map[0].float().cpu().numpy(),
+        None if point_confidence is None else point_confidence[0].float().cpu().numpy(),
     )
 
 
@@ -440,7 +515,7 @@ def save_surfel_ply(path: Path, points: np.ndarray, colors: np.ndarray,
 def main() -> None:
     args = arguments()
     if not VGGT_ROOT.is_dir():
-        raise SystemExit("VGGT source is missing; run scripts/setup_vggt_apple.sh")
+        raise SystemExit("VGGT source is missing; run scripts/setup_apple.sh")
     if args.frame_stride < 1 or args.timesteps_per_chunk < 1 or args.pixel_stride < 1:
         raise SystemExit("stride and chunk sizes must be positive")
     if not 0 <= args.chunk_overlap < args.timesteps_per_chunk:
@@ -474,20 +549,29 @@ def main() -> None:
                 "  --model facebook/VGGT-1B\n"
             ) from None
         raise
-    # These heads are not used and consume substantial unified memory.
-    model.point_head = None
+    # Unused heads consume substantial unified memory.
+    if args.geometry_head != "point":
+        model.point_head = None
     model.track_head = None
+    if args.depth_cache:
+        args.depth_cache.mkdir(parents=True, exist_ok=True)
 
     infos = load_registered_cameras(args.dataset)
     if not infos:
         raise SystemExit(f"No registered COLMAP images found in {args.dataset}")
     known_centers, known_rotations, centroid, normalization = camera_centers(infos)
     names = [info.image_name for info in infos if info.image_name in known_centers]
-    chunks = make_chunks(
-        names, args.frame_stride, args.timesteps_per_chunk, args.chunk_overlap,
-        set(args.agents) if args.agents else None,
-        args.chunk_mode,
-    )
+    if args.chunk_mode == "hybrid":
+        chunks = make_hybrid_chunks(
+            names, known_centers, args.frame_stride, args.timesteps_per_chunk,
+            args.chunk_overlap, args.min_camera_span,
+        )
+    else:
+        chunks = make_chunks(
+            names, args.frame_stride, args.timesteps_per_chunk, args.chunk_overlap,
+            set(args.agents) if args.agents else None,
+            args.chunk_mode,
+        )
     chunks = add_baseline_anchors(
         chunks, names, known_centers, args.min_camera_span, args.adaptive_anchors
     )
@@ -495,14 +579,28 @@ def main() -> None:
         raise SystemExit("No image chunks were selected")
     print(f"Selected {len(chunks)} chunks from {len(names)} registered images")
 
-    all_points, all_colors, all_confidence, all_scales, all_quaternions, all_sources, reports = [], [], [], [], [], [], []
+    all_points, all_colors, all_confidence, all_scales, all_quaternions = [], [], [], [], []
+    all_sources, all_ground_sources, reports = [], [], []
+    ground_stream_ids: dict[str, int] = {}
+    ground_height_samples: dict[int, list[float]] = {}
     per_chunk_limit = max(20_000, math.ceil(args.max_points * 1.5 / len(chunks)))
     for chunk_index, chunk_names in enumerate(chunks, 1):
         paths = [args.dataset / "images" / name for name in chunk_names]
         print(f"[{chunk_index}/{len(chunks)}] VGGT: {', '.join(chunk_names)}")
         images = load_and_preprocess_images([str(path) for path in paths], mode="pad").to(device)
-        extrinsic, intrinsic, depth, confidence = inference(model, images, device)
-        points = unproject_depth_map_to_point_map(depth, extrinsic, intrinsic)
+        extrinsic, intrinsic, depth, confidence, point_map, point_confidence = inference(
+            model, images, device, args.geometry_head
+        )
+        points = point_map if point_map is not None else unproject_depth_map_to_point_map(depth, extrinsic, intrinsic)
+        if point_confidence is not None:
+            confidence = point_confidence
+        if args.depth_cache:
+            np.savez_compressed(
+                args.depth_cache / f"chunk_{chunk_index:04d}.npz",
+                names=np.asarray(chunk_names), extrinsic=extrinsic, intrinsic=intrinsic,
+                depth=depth.astype(np.float16), confidence=confidence.astype(np.float16),
+                model_input=images.float().cpu().numpy().astype(np.float16),
+            )
         source_centers = predicted_centers(extrinsic)
         target_centers = np.asarray([known_centers[name] for name in chunk_names])
         target_span = float(np.max(np.linalg.norm(target_centers - target_centers.mean(0), axis=1)))
@@ -583,11 +681,39 @@ def main() -> None:
             sample_grid[::args.pixel_stride, ::args.pixel_stride] = True
             valid[frame] = frame_valid & sample_grid
 
+            stream_match, camera_match = AGENT.search(name), CAMERA.search(name)
+            stream_name = (
+                f"a{stream_match.group(1)}_c{camera_match.group(1)}"
+                if stream_match and camera_match else name
+            )
+            stream_id = ground_stream_ids.setdefault(stream_name, len(ground_stream_ids))
+            road_region = np.zeros_like(frame_valid)
+            height, width = road_region.shape
+            road_region[int(height * 0.62):, int(width * 0.18):int(width * 0.82)] = True
+            frame_points = points[frame]
+            tangent_x = np.gradient(frame_points, axis=1)
+            tangent_y = np.gradient(frame_points, axis=0)
+            normals = np.cross(tangent_x, tangent_y)
+            normal_length = np.linalg.norm(normals, axis=-1)
+            horizontal = np.abs(normals[..., 2]) / np.maximum(normal_length, 1e-8) >= 0.75
+            road_values = frame_points[..., 2][frame_valid & road_region & horizontal]
+            if len(road_values) >= 128:
+                ground_height_samples.setdefault(stream_id, []).append(float(np.median(road_values)))
+
         selected_points = points[valid]
         selected_colors = colors[valid]
         selected_confidence = confidence[valid]
         selected_scales = surfel_scales[valid]
         selected_quaternions = surfel_quaternions[valid]
+        registration_grid = np.empty(valid.shape, dtype=np.int16)
+        for frame, name in enumerate(chunk_names):
+            stream_match, camera_match = AGENT.search(name), CAMERA.search(name)
+            stream_name = (
+                f"a{stream_match.group(1)}_c{camera_match.group(1)}"
+                if stream_match and camera_match else name
+            )
+            registration_grid[frame] = ground_stream_ids[stream_name]
+        selected_ground_sources = registration_grid[valid]
         distance = np.min(
             np.linalg.norm(selected_points[:, None, :] - target_centers[None, :, :], axis=2), axis=1
         )
@@ -595,6 +721,7 @@ def main() -> None:
         selected_points, selected_colors = selected_points[near], selected_colors[near]
         selected_confidence = selected_confidence[near]
         selected_scales, selected_quaternions = selected_scales[near], selected_quaternions[near]
+        selected_ground_sources = selected_ground_sources[near]
         if not len(selected_points):
             reports.append({"images": chunk_names, "alignmentRmse": rmse, "points": 0, "rejected": "no supported points"})
             print("  rejected chunk: no supported points remained")
@@ -607,12 +734,14 @@ def main() -> None:
             selected_points, selected_colors = selected_points[choice], selected_colors[choice]
             selected_confidence = selected_confidence[choice]
             selected_scales, selected_quaternions = selected_scales[choice], selected_quaternions[choice]
+            selected_ground_sources = selected_ground_sources[choice]
         all_points.append(selected_points.astype(np.float32))
         all_colors.append(selected_colors.astype(np.float32))
         all_confidence.append(selected_confidence.astype(np.float32))
         all_scales.append(selected_scales.astype(np.float32))
         all_quaternions.append(selected_quaternions.astype(np.float32))
         all_sources.append(np.full(len(selected_points), chunk_index - 1, dtype=np.int32))
+        all_ground_sources.append(selected_ground_sources.astype(np.int16))
         reports.append({"images": chunk_names, "cameraSpan": target_span, "alignmentRmse": rmse, "points": len(selected_points)})
         del images, depth, confidence, points
         if device.type == "mps":
@@ -623,6 +752,18 @@ def main() -> None:
     points = np.concatenate(all_points); colors = np.concatenate(all_colors); confidence = np.concatenate(all_confidence)
     scales = np.concatenate(all_scales); quaternions = np.concatenate(all_quaternions)
     sources = np.concatenate(all_sources)
+    ground_sources = np.concatenate(all_ground_sources)
+    ground_heights = {
+        source: float(np.median(values)) for source, values in ground_height_samples.items() if values
+    }
+    ground_shifts, ground_target = {}, float("nan")
+    if args.ground_register:
+        points, ground_shifts, ground_target = register_group_ground(
+            points, ground_sources, ground_heights, args.max_ground_shift
+        )
+        stream_by_id = {identifier: name for name, identifier in ground_stream_ids.items()}
+        for source, shift in ground_shifts.items():
+            print(f"Ground registration {stream_by_id[source]}: {shift:+.4f}")
     consensus = consensus_mask(points, sources, args.support_voxel_size, args.min_chunk_support)
     consensus_removed = int((~consensus).sum())
     points, colors, confidence = points[consensus], colors[consensus], confidence[consensus]
@@ -648,12 +789,29 @@ def main() -> None:
         "lidarUsed": camera_manifest_data.get("lidarUsed", False),
         "pointCount": len(points),
         "normalization": {"centroid": centroid.tolist(), "scale": normalization},
-        "parameters": vars(args) | {"dataset": str(args.dataset), "output": str(args.output)},
+        "parameters": {
+            key: str(value) if isinstance(value, Path) else value
+            for key, value in vars(args).items()
+        },
         "chunks": reports,
         "consensusRemoved": consensus_removed,
+        "groundRegistration": {
+            "enabled": args.ground_register,
+            "target": ground_target,
+            "streams": {
+                name: {"height": ground_heights.get(identifier), "shift": ground_shifts.get(identifier, 0.0)}
+                for name, identifier in ground_stream_ids.items()
+            },
+        },
         "warning": "Model-inferred geometry is interpretive and must not be treated as measured accident evidence.",
     }
     args.output.with_suffix(".json").write_text(json.dumps(provenance, indent=2) + "\n")
+    if args.depth_cache:
+        cache_files = sorted(path.name for path in args.depth_cache.glob("chunk_*.npz"))
+        (args.depth_cache / "index.json").write_text(json.dumps({
+            "dataset": str(args.dataset.resolve()), "model": args.model,
+            "geometryHead": args.geometry_head, "chunks": cache_files,
+        }, indent=2) + "\n")
     print(f"Saved {len(points):,} confidence-filtered transformer surfels to {args.output}")
 
 

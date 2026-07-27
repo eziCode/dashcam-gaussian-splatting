@@ -24,6 +24,7 @@ PREPARED="${3:-$ROOT/runs/v2x-real-connected/prepared}"
   --support-voxel-size 0.02 \
   --min-camera-span 0.002 \
   --max-point-distance 2.0 \
-  --max-relative-depth-gradient 0.12
+  --max-relative-depth-gradient 0.12 \
+  "${@:4}"
 
 echo "Transformer scene: $OUTPUT"

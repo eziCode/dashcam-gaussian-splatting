@@ -37,7 +37,13 @@ for record in records:
         "camera": str(record["camera"]),
         "image": record["image"],
     })
-    metadata = yaml.safe_load(Path(record["sourceMetadata"]).read_text())
+    metadata_path = Path(record["sourceMetadata"])
+    if not metadata_path.is_file():
+        # Prepared manifests may move between the host and a container. The
+        # image symlink remains relative, so its source directory is portable.
+        metadata_frame = f"{int(record['timestep']):06d}"
+        metadata_path = (args.dataset / "images" / record["image"]).resolve().parent / f"{metadata_frame}.yaml"
+    metadata = yaml.safe_load(metadata_path.read_text())
     for identifier, item in (metadata.get("vehicles") or {}).items():
         objects.setdefault(str(identifier), item)
 
